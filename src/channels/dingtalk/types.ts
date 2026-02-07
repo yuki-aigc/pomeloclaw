@@ -105,6 +105,9 @@ export interface SessionState {
     threadId: string;
     messageHistory: import('@langchain/core/messages').BaseMessage[];
     totalTokens: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    compactionCount: number;
     lastUpdated: number;
 }
 

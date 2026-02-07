@@ -147,6 +147,11 @@ export interface DingTalkConfig {
         mode?: 'text' | 'button';
         templateId?: string;
     };
+    voice?: {
+        enabled?: boolean;
+        requireRecognition?: boolean;
+        prependRecognitionHint?: boolean;
+    };
 }
 
 export interface Config {

@@ -114,6 +114,11 @@ cp .qwen/config/settings_example.json ~/.qwen/settings.json
         "cardTemplateId": "", // 钉钉卡片模板ID
         "showThinking": true, // 是否显示思考过程
         "debug": false, // 是否开启调试
+        "voice": {
+            "enabled": true, // 是否启用语音输入
+            "requireRecognition": true, // 语音消息必须有钉钉识别文本，否则提示重试
+            "prependRecognitionHint": true // 传给模型前是否加“用户语音转写”前缀
+        },
         "execApprovals": {
             "enabled": false, // 是否允许执行命令行审批
             "mode": "button", // 审批模式，text或button
@@ -241,6 +246,9 @@ pnpm dingtalk
 ```
 
 - 需要在[钉钉开发者后台](https://open-dev.dingtalk.com/fe/card) 开启消息卡片功能。在本项目template中提供了两个卡片模板，可以导入使用。
+- 语音输入默认使用钉钉上行消息里的 `recognition` 字段（语音转文字结果）。
+- 可在钉钉会话中使用 `/voice` 查看状态，`/voice on` 或 `/voice off` 实时切换语音输入开关。
+- 图片会自动做视觉理解；文件会尝试抽取文本内容；视频会尝试抽帧并生成摘要（需本机安装 `ffmpeg/ffprobe`）。
 - 在应用的权限管理页面，需要开启以下权限：
   - ✅ Card.Instance.Write — 创建和投放卡片实例
   - ✅ Card.Streaming.Write — 对卡片进行流式更新

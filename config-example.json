@@ -92,6 +92,11 @@
         "cardTemplateId": "",
         "showThinking": true,
         "debug": false,
+        "voice": {
+            "enabled": true,
+            "requireRecognition": true,
+            "prependRecognitionHint": true
+        },
         "execApprovals": {
             "enabled": false,
             "mode": "button",

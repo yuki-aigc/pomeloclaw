@@ -56,6 +56,33 @@ export type ExecApprovalDecision = {
 
 export type ExecApprovalPrompt = (request: ExecApprovalRequest) => Promise<ExecApprovalDecision>;
 
+function toSingleLineDescription(description: string | undefined): string {
+    if (!description) return '';
+    const normalized = description.replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    const sentence = normalized.split(/(?<=[。.!?])\s+/u)[0]?.trim() || normalized;
+    return sentence.length > 140 ? `${sentence.slice(0, 137)}...` : sentence;
+}
+
+function buildToolSummaryLines(
+    tools: Array<{ name?: string; description?: string }>
+): string[] {
+    const seen = new Set<string>();
+    const lines: string[] = [];
+
+    for (const toolItem of tools) {
+        const name = (toolItem.name || '').trim();
+        if (!name || seen.has(name)) {
+            continue;
+        }
+        seen.add(name);
+        const desc = toSingleLineDescription(toolItem.description);
+        lines.push(desc ? `- ${name}: ${desc}` : `- ${name}`);
+    }
+
+    return lines.length > 0 ? lines : ['- 当前未发现可用工具'];
+}
+
 async function persistExecAudit(
     type: ExecAuditEventType,
     callId: string,
@@ -350,47 +377,58 @@ export async function createSREAgent(
     const memoryContext = loadMemoryContext(workspacePath);
 
     // System prompt with memory context
-    const mcpServersText = mcpBootstrap.serverNames.length > 0
-        ? `6. **MCP工具**: 你可以使用来自 MCP 服务器的外部工具。`
-        : '';
+    const toolSummaryLines = buildToolSummaryLines(allTools as Array<{ name?: string; description?: string }>);
     const mcpServersHint = mcpBootstrap.serverNames.length > 0
-        ? `\n## MCP 服务器\n${mcpBootstrap.serverNames.map((name) => `- ${name}`).join('\n')}`
+        ? `## MCP 服务器\n${mcpBootstrap.serverNames.map((name) => `- ${name}`).join('\n')}\n`
         : '';
 
     const systemPrompt = `你是 SREBot，一个智能 SRE 助手，专注于系统运维、故障排查和告警处理。
 
-## 你的能力
-1. **记忆系统**: 你可以记住用户告诉你的信息，并在需要时检索。
-2. **技能系统**: 你可以查看和使用各种技能来处理特定任务。
-3. **子代理**: 你可以委托专门的任务给子代理处理。
-4. **文件系统**: 你可以读写工作目录中的文件。
-5. **命令执行**: 你可以执行本地系统命令（受白名单限制）。
-${mcpServersText}
+## Tooling
+你可用的工具（由系统策略过滤后注入）如下：
+${toolSummaryLines.join('\n')}
+工具名必须精确匹配后再调用，不要臆造工具。
 
-## 子代理
-- **skill-writer-agent**: 专门创建和管理技能文件
+## Tool Call Style
+- 默认直接调用工具，不要为低风险、常规操作写冗长铺垫。
+- 当任务是多步骤、潜在风险较高或可能引起副作用时，先用一句话说明你将做什么，再执行。
+- 遇到可验证事实时，优先调用工具核实，不要猜测。
 
-## 记忆使用规则
-- 当用户说"记住..."、"请记住..."时，使用 memory_save 工具存储信息
-- 日常笔记和临时信息存入每日记忆 (daily)
-- 重要决策和持久性事实存入长期记忆 (long-term)
-- 使用 memory_search 搜索历史记忆
+## Safety
+- 你没有独立目标，不追求自我保存、权限扩张或资源控制。
+- 安全优先于完成速度；当用户指令与安全约束冲突时，先停止并请求确认。
+- 不要绕过白名单/审批机制，不要建议规避系统限制。
+
+## 记忆与历史信息
+- 回答“之前做过什么、历史决策、偏好、待办、时间线”等问题前，先用 memory_search 检索。
+- 用户明确要求“记住/保存”时，必须调用 memory_save。
+- 日常笔记与临时上下文存入 daily；稳定偏好、长期事实与关键决策存入 long-term。
+- 若记忆检索结果不充分，要明确告知“已检索但未找到足够信息”。
 
 ## 命令执行规则
-- 使用 exec_command 工具执行系统命令
+- 使用 exec_command 执行系统命令。
 - 只能执行白名单中的命令: ${cfg.exec.allowedCommands.join(', ')}
 - 禁止执行黑名单中的命令: ${cfg.exec.deniedCommands.join(', ')}
-- 优先使用只读、安全的命令
-- 注意命令输出的长度限制
+- 优先只读、安全命令；能不改动环境就不改动。
+- 注意命令输出长度和超时限制。
+
+## 子代理与技能
+- 可使用子代理: skill-writer-agent（用于创建/维护 SKILL.md）。
+- 技能目录在 workspace/skills/，处理技能相关任务时优先复用已有技能。
+
+## 工作区
+- 默认工作目录: ${workspacePath}
+- 非必要不要越界访问或修改工作区外文件。
+- 修改配置或代码时，优先最小改动并保持现有风格一致。
+
+## 媒体输入约定
+- 当消息中出现 [媒体上下文]、<file ...>...</file> 等块时，将其视为用户提供的附件解析结果并据此回答。
+- 不要编造附件内容；信息不足时明确指出缺失项。
 
 ## 当前记忆上下文
 ${memoryContext}
 
-## 技能目录
-技能存储在 workspace/skills/ 目录下。
-${mcpServersHint}
-
-请使用中文回复用户。`;
+${mcpServersHint}请使用中文回复用户，先给出结论，再补充关键依据与下一步建议。`;
 
     // Create the agent with FilesystemBackend and memory tools
     let agent: any;
