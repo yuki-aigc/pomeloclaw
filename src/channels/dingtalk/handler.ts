@@ -40,11 +40,19 @@ import {
     compactMessages,
     formatTokenCount,
 } from '../../compaction/index.js';
-import { ChatOpenAI } from '@langchain/openai';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { Config } from '../../config.js';
+import {
+    createChatModel,
+    getActiveModelAlias,
+    getModelCacheKey,
+    listConfiguredModels,
+} from '../../llm.js';
 
 // Session state cache (conversationId -> SessionState)
 const sessionCache = new Map<string, SessionState>();
+let cachedCompactionModel: BaseChatModel | null = null;
+let cachedCompactionModelKey = '';
 
 // Per-conversation processing queue to ensure serial handling
 const conversationQueue = new Map<string, Promise<void>>();
@@ -148,16 +156,19 @@ function cleanupSessions(): void {
 }
 
 /**
- * Create compaction model from config
+ * Get or create a shared compaction model from config
  */
-function createCompactionModel(config: Config): ChatOpenAI {
-    return new ChatOpenAI({
-        model: config.openai.model,
-        apiKey: config.openai.api_key,
-        configuration: { baseURL: config.openai.base_url },
-        maxRetries: config.openai.max_retries ?? 3,
-        temperature: 0,
-    });
+async function getCompactionModel(config: Config): Promise<BaseChatModel> {
+    const modelKey = getModelCacheKey(config);
+
+    if (cachedCompactionModel && cachedCompactionModelKey === modelKey) {
+        return cachedCompactionModel;
+    }
+
+    cachedCompactionModel = await createChatModel(config, { temperature: 0 });
+
+    cachedCompactionModelKey = modelKey;
+    return cachedCompactionModel;
 }
 
 export interface MessageHandlerContext {
@@ -166,6 +177,89 @@ export interface MessageHandlerContext {
     config: Config;
     dingtalkConfig: DingTalkConfig;
     log: Logger;
+    switchModel?: (alias: string) => Promise<{ alias: string; model: string }>;
+}
+
+type ModelSlashCommand = { type: 'list' } | { type: 'switch'; alias: string };
+
+function parseModelSlashCommand(input: string): ModelSlashCommand | null {
+    const text = input.trim();
+    if (text === '/models') {
+        return { type: 'list' };
+    }
+    if (text === '/model') {
+        return { type: 'switch', alias: '' };
+    }
+    if (text.startsWith('/model ')) {
+        return { type: 'switch', alias: text.slice('/model'.length).trim() };
+    }
+    return null;
+}
+
+async function tryHandleModelCommand(params: {
+    text: string;
+    ctx: MessageHandlerContext;
+    sessionWebhook: string;
+    isDirect: boolean;
+    senderId: string;
+}): Promise<boolean> {
+    const parsed = parseModelSlashCommand(params.text);
+    if (!parsed) return false;
+
+    const mention = { atUserId: !params.isDirect ? params.senderId : null };
+    if (parsed.type === 'list') {
+        const activeAlias = getActiveModelAlias(params.ctx.config);
+        const lines = listConfiguredModels(params.ctx.config)
+            .map((item) => `${item.alias === activeAlias ? '•' : ' '} ${item.alias} (${item.provider}) -> ${item.model}`)
+            .join('\n');
+        const message = lines
+            ? `🤖 已配置模型\n\n${lines}`
+            : 'ℹ️ 当前没有可用模型配置。';
+        await sendBySession(params.ctx.dingtalkConfig, params.sessionWebhook, message, mention, params.ctx.log);
+        return true;
+    }
+
+    if (!parsed.alias) {
+        await sendBySession(
+            params.ctx.dingtalkConfig,
+            params.sessionWebhook,
+            `ℹ️ 用法: /model <模型别名>\n当前模型: ${getActiveModelAlias(params.ctx.config)}`,
+            mention,
+            params.ctx.log
+        );
+        return true;
+    }
+
+    if (!params.ctx.switchModel) {
+        await sendBySession(
+            params.ctx.dingtalkConfig,
+            params.sessionWebhook,
+            '❌ 当前运行模式不支持实时切换模型。',
+            mention,
+            params.ctx.log
+        );
+        return true;
+    }
+
+    try {
+        const result = await params.ctx.switchModel(parsed.alias);
+        await sendBySession(
+            params.ctx.dingtalkConfig,
+            params.sessionWebhook,
+            `✅ 已切换模型: ${result.alias} (${result.model})`,
+            mention,
+            params.ctx.log
+        );
+    } catch (error) {
+        await sendBySession(
+            params.ctx.dingtalkConfig,
+            params.sessionWebhook,
+            `❌ 切换模型失败: ${error instanceof Error ? error.message : String(error)}`,
+            mention,
+            params.ctx.log
+        );
+    }
+    return true;
 }
 
 /**
@@ -182,7 +276,7 @@ async function handleMessageInternal(
     data: DingTalkInboundMessage,
     ctx: MessageHandlerContext
 ): Promise<void> {
-    const { agent, config, dingtalkConfig, log } = ctx;
+    const { config, dingtalkConfig, log } = ctx;
 
     // Clean up expired sessions periodically
     cleanupSessions();
@@ -205,6 +299,17 @@ async function handleMessageInternal(
     const senderId = data.senderStaffId || data.senderId;
     const senderName = data.senderNick || 'Unknown';
     const conversationId = data.conversationId;
+
+    const handledModelCommand = await tryHandleModelCommand({
+        text: content.text,
+        ctx,
+        sessionWebhook: data.sessionWebhook,
+        isDirect,
+        senderId,
+    });
+    if (handledModelCommand) {
+        return;
+    }
 
     let downloadedMediaPath: string | undefined;
     if (content.mediaPath && dingtalkConfig.robotCode) {
@@ -254,12 +359,12 @@ async function handleMessageInternal(
     // Update token count with user input
     flushState = updateTokenCount(flushState, content.text);
 
-    // Create compaction model
-    const compactionModel = createCompactionModel(config);
+    // Reuse shared compaction model
+    const compactionModel = await getCompactionModel(config);
     const compactionConfig = config.agent.compaction;
 
     // Check if we need auto-compaction before processing
-    await executeAutoCompact(agent, session, flushState, compactionModel, compactionConfig, log);
+    await executeAutoCompact(ctx.agent, session, flushState, compactionModel, compactionConfig, log);
 
     // Determine message mode
     const useCardMode = dingtalkConfig.messageType === 'card';
@@ -318,7 +423,7 @@ async function handleMessageInternal(
             // Card mode: use streaming
             log.info('[DingTalk] Starting streamEvents...');
 
-            const eventStream = agent.streamEvents(
+            const eventStream = ctx.agent.streamEvents(
                 { messages: [{ role: 'user', content: content.text }] },
                 { ...agentConfig, version: 'v2' }
             );
@@ -452,7 +557,7 @@ async function handleMessageInternal(
             }
         } else {
             // Markdown mode: use invoke
-            const result = await agent.invoke(
+            const result = await ctx.agent.invoke(
                 { messages: [{ role: 'user', content: content.text }] },
                 agentConfig
             );
@@ -494,7 +599,7 @@ async function handleMessageInternal(
         session.lastUpdated = Date.now();
 
         // Check auto-compaction after response
-        await executeAutoCompact(agent, session, flushState, compactionModel, compactionConfig, log);
+        await executeAutoCompact(ctx.agent, session, flushState, compactionModel, compactionConfig, log);
 
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -611,7 +716,7 @@ async function executeAutoCompact(
     agent: any,
     session: SessionState,
     flushState: MemoryFlushState,
-    compactionModel: ChatOpenAI,
+    compactionModel: BaseChatModel,
     compactionConfig: CompactionConfig,
     log: Logger
 ): Promise<void> {

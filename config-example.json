@@ -1,9 +1,27 @@
 {
-    "openai": {
-        "base_url": "",
-        "model": "",
-        "api_key": "",
-        "max_retries": 3
+    "llm": {
+        "default_model": "default_model",
+        "models": [
+            {
+                "alias": "default_model",
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4o",
+                "api_key": "",
+                "max_retries": 3
+            },
+            {
+                "alias": "claude35",
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "model": "claude-3-5-sonnet-latest",
+                "api_key": "",
+                "headers": {
+                    "anthropic-version": "2023-06-01"
+                },
+                "max_retries": 3
+            }
+        ]
     },
     "agent": {
         "workspace": "./workspace",

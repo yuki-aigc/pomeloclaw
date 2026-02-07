@@ -8,6 +8,7 @@
 - 🧹 **上下文压缩**: 自动/手动压缩对话历史，展示 token 使用情况
 - 🛠️ **技能系统**: SKILL.md 定义技能，动态加载与子代理协作
 - 🔌 **MCP 集成**: 支持通过 `@langchain/mcp-adapters` 挂载 MCP 工具（stdio / http(sse)）
+- 🤖 **模型提供商**: 支持 OpenAI / Anthropic（通过配置切换）
 - 💬 **交互模式**: CLI 对话 + DingTalk Stream 机器人模式
 - 🧾 **命令执行**: 白名单命令执行，支持审批与超时/输出限制
 - 📁 **文件读写**: 工作区文件系统读写，支撑记忆与技能存储
@@ -18,6 +19,8 @@
 
 ```bash
 pnpm install
+# 若要使用 Anthropic 提供商，请额外安装：
+pnpm add @langchain/anthropic
 ```
 
 ### 2. 配置
@@ -32,11 +35,29 @@ cp .qwen/config/settings_example.json ~/.qwen/settings.json
 
 ```json
 {   
-    "openai": {   //兼容openai，后续考虑兼容ANTHROPIC接口
-        "base_url": "",
-        "model": "",
-        "api_key": "",
-        "max_retries": 3
+    "llm": {
+        "default_model": "default_model", // 默认模型别名
+        "models": [ // 多模型配置池，可通过 /model <别名> 实时切换
+            {
+                "alias": "default_model",
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4o",
+                "api_key": "",
+                "max_retries": 3
+            },
+            {
+                "alias": "claude35",
+                "provider": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "model": "claude-3-5-sonnet-latest",
+                "api_key": "",
+                "headers": { // 可选，按模型透传自定义请求头
+                    "anthropic-version": "2023-06-01"
+                },
+                "max_retries": 3
+            }
+        ]
     },
     "agent": {
         "workspace": "./workspace", // 工作区目录
@@ -120,13 +141,28 @@ cp .qwen/config/settings_example.json ~/.qwen/settings.json
 }
 ```
 
-或使用环境变量（覆盖 `openai` 配置）：
+或使用环境变量：
 
 ```bash
+# 指定当前模型别名（优先级高于 default_model）
+export LLM_MODEL_ALIAS="default_model"
+
+# 可选：按 provider 自动选择模型（仅当未指定 LLM_MODEL_ALIAS）
+export LLM_PROVIDER="openai"  # 或 anthropic
+
+# OpenAI
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="gpt-4o"
 export OPENAI_BASE_URL="https://api.openai.com/v1"
+
+# Anthropic
+export ANTHROPIC_API_KEY="your-api-key"
+export ANTHROPIC_MODEL="claude-3-5-sonnet-latest"
+export ANTHROPIC_BASE_URL="https://api.anthropic.com"
 ```
+
+`llm.models[]` 额外支持：
+- `headers`: 自定义请求头（例如 `anthropic-version`）
 
 ### 3. 运行
 
@@ -176,6 +212,12 @@ deepagents_srebot/
 
 你: /compact 只保留关键决策
 助手: 上下文压缩完成 ...
+
+你: /models
+助手: 展示已配置模型列表（含当前激活模型）
+
+你: /model claude35
+助手: 已切换到 claude35
 ```
 
 ### 技能编写子代理

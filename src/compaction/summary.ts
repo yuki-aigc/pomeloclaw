@@ -1,6 +1,6 @@
 import type { BaseMessage } from '@langchain/core/messages';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import type { ChatOpenAI } from '@langchain/openai';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { estimateMessageTokens } from './compaction.js';
 
 const SUMMARY_SYSTEM_PROMPT = `你是一个对话摘要助手。请将以下对话历史压缩成简洁的摘要，保留：
@@ -22,7 +22,7 @@ const SUMMARY_USER_TEMPLATE = `请总结以下对话历史：
  */
 export async function generateSummary(
     messages: BaseMessage[],
-    model: ChatOpenAI,
+    model: BaseChatModel,
     customInstructions?: string,
 ): Promise<string> {
     if (messages.length === 0) {
@@ -68,7 +68,7 @@ export async function generateSummary(
  */
 export async function compactMessages(
     messages: BaseMessage[],
-    model: ChatOpenAI,
+    model: BaseChatModel,
     maxTokens: number,
     customInstructions?: string,
 ): Promise<{

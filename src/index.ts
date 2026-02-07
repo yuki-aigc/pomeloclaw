@@ -2,10 +2,18 @@ import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import crypto from 'node:crypto';
 
-import { ChatOpenAI } from '@langchain/openai';
 import { createAgent } from './agent.js';
 import type { ExecApprovalPrompt, ExecApprovalRequest, ExecApprovalDecision } from './agent.js';
 import { loadConfig } from './config.js';
+import {
+    createChatModel,
+    getActiveModelAlias,
+    getActiveModelEntry,
+    getActiveModelName,
+    hasModelAlias,
+    listConfiguredModels,
+    setActiveModelAlias,
+} from './llm.js';
 import {
     estimateTotalTokens,
     shouldAutoCompact,
@@ -16,6 +24,7 @@ import {
 import { parseCommand, handleCommand, type CommandContext } from './commands/index.js';
 import {
     createMemoryFlushState,
+    estimateTokens,
     updateTokenCount,
     shouldTriggerMemoryFlush,
     markFlushCompleted,
@@ -84,7 +93,7 @@ function formatMarkdown(text: string): string {
  */
 function printHeader(config: ReturnType<typeof loadConfig>) {
     const cwd = process.cwd();
-    const model = config.openai.model;
+    const model = getActiveModelName(config);
 
     const o = colors.orange;
     const r = colors.reset;
@@ -100,6 +109,12 @@ function printHeader(config: ReturnType<typeof loadConfig>) {
     console.log(`     ${g}▀   ▀${r}`);
     console.log();
     console.log(` ${g}Welcome to SRE Bot. Type "/help" for commands, "exit" to quit.${r}\n`);
+}
+
+function maskApiKey(apiKey: string): string {
+    if (!apiKey) return '(not set)';
+    if (apiKey.length <= 8) return `${apiKey.slice(0, 2)}...${apiKey.slice(-2)}`;
+    return `${apiKey.slice(0, 6)}...${apiKey.slice(-6)}`;
 }
 
 async function main() {
@@ -170,16 +185,12 @@ async function main() {
         }
         : undefined;
 
-    const { agent, cleanup } = await createAgent(config, { execApprovalPrompt });
+    const initialAgentContext = await createAgent(config, { execApprovalPrompt });
+    let agent = initialAgentContext.agent;
+    let cleanup = initialAgentContext.cleanup;
 
     // Create model instance for compaction
-    const compactionModel = new ChatOpenAI({
-        model: config.openai.model,
-        apiKey: config.openai.api_key,
-        configuration: { baseURL: config.openai.base_url },
-        maxRetries: config.openai.max_retries ?? 3,
-        temperature: 0,
-    });
+    let compactionModel = await createChatModel(config, { temperature: 0 });
 
     printHeader(config);
 
@@ -188,22 +199,100 @@ async function main() {
     // Session state
     let threadId = `thread-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
     let sessionStartTime = new Date();
+    let lastUpdatedAt = new Date();
     let messageHistory: import('@langchain/core/messages').BaseMessage[] = [];
     let flushState: MemoryFlushState = createMemoryFlushState();
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
     let hasConversation = false;
+    const appVersion = process.env.npm_package_version || '1.0.0';
 
     const getAgentConfig = () => ({
         configurable: { thread_id: threadId },
         recursionLimit: config.agent.recursion_limit,
     });
 
-    const getCommandContext = (): CommandContext => ({
-        model: compactionModel,
-        config: config.agent.compaction,
-        currentTokens: flushState.totalTokens,
-        threadId,
-        sessionStartTime,
-    });
+    const getCommandContext = (): CommandContext => {
+        const active = getActiveModelEntry(config);
+        return {
+            model: compactionModel,
+            config: config.agent.compaction,
+            currentTokens: flushState.totalTokens,
+            totalInputTokens,
+            totalOutputTokens,
+            compactionCount: flushState.flushCount,
+            threadId,
+            sessionStartTime,
+            lastUpdatedAt,
+            appVersion,
+            activeModelAlias: getActiveModelAlias(config),
+            activeModel: {
+                alias: active.alias,
+                provider: active.provider,
+                model: active.model,
+            },
+            activeModelApiKeyMasked: maskApiKey(active.api_key),
+            runtimeMode: 'direct',
+            thinkLevel: 'low',
+            queueName: 'collect',
+            queueDepth: 0,
+            modelOptions: listConfiguredModels(config).map((item) => ({
+                alias: item.alias,
+                provider: item.provider,
+                model: item.model,
+            })),
+        };
+    };
+
+    async function switchModel(alias: string): Promise<string> {
+        const trimmedAlias = alias.trim();
+        if (!trimmedAlias) {
+            return '❌ 模型别名不能为空。';
+        }
+        if (!hasModelAlias(config, trimmedAlias)) {
+            return `❌ 未找到模型别名: ${trimmedAlias}`;
+        }
+
+        const previousAlias = getActiveModelAlias(config);
+        if (trimmedAlias === previousAlias) {
+            return `ℹ️ 当前已在使用模型: ${trimmedAlias}`;
+        }
+
+        let nextCleanup: (() => Promise<void>) | null = null;
+        try {
+            setActiveModelAlias(config, trimmedAlias);
+            const nextAgentContext = await createAgent(config, { execApprovalPrompt });
+            nextCleanup = nextAgentContext.cleanup;
+            const nextCompactionModel = await createChatModel(config, { temperature: 0 });
+
+            const oldCleanup = cleanup;
+            agent = nextAgentContext.agent;
+            cleanup = nextAgentContext.cleanup;
+            compactionModel = nextCompactionModel;
+
+            try {
+                await oldCleanup();
+            } catch (error) {
+                console.warn(`${colors.yellow}[MCP] previous agent cleanup failed:${colors.reset}`, error instanceof Error ? error.message : String(error));
+            }
+
+            return `✅ 已切换模型: ${trimmedAlias} (${getActiveModelName(config)})`;
+        } catch (error) {
+            if (nextCleanup) {
+                try {
+                    await nextCleanup();
+                } catch {
+                    // ignore cleanup errors on failed switch
+                }
+            }
+            try {
+                setActiveModelAlias(config, previousAlias);
+            } catch {
+                // ignore rollback failure and report original switch error
+            }
+            return `❌ 切换模型失败: ${error instanceof Error ? error.message : String(error)}`;
+        }
+    }
 
     /**
      * Execute memory flush - save conversation summary to memory file
@@ -277,8 +366,11 @@ async function main() {
     function resetSession(newThreadId: string): void {
         threadId = newThreadId;
         sessionStartTime = new Date();
+        lastUpdatedAt = new Date();
         messageHistory = [];
         flushState = createMemoryFlushState();
+        totalInputTokens = 0;
+        totalOutputTokens = 0;
         hasConversation = false;
     }
 
@@ -322,11 +414,12 @@ async function main() {
     try {
         while (true) {
             const userPromptText = `${colors.gray}❯ ${colors.reset}`;
-            const userInput = await rl.question(userPromptText);
+            const userInput = (await rl.question(userPromptText)).trim();
 
-            if (!userInput.trim()) {
+            if (!userInput) {
                 continue;
             }
+            lastUpdatedAt = new Date();
 
             if (userInput.toLowerCase() === 'exit' || userInput.toLowerCase() === 'quit') {
                 await gracefulExit();
@@ -334,12 +427,11 @@ async function main() {
             }
 
             // Check for slash commands
-            if (userInput.trim().startsWith('/')) {
+            if (userInput.startsWith('/')) {
                 const result = await handleCommand(userInput, getCommandContext(), messageHistory);
 
                 if (result.handled) {
-                    console.log();
-                    console.log(`${colors.white}● ${colors.reset}${result.response || ''}`);
+                    let responseText = result.response || '';
 
                     if (result.action === 'new_session' && result.newThreadId) {
                         // Flush memory before starting new session
@@ -347,15 +439,38 @@ async function main() {
                             await executeMemoryFlush();
                         }
                         resetSession(result.newThreadId);
-                    } else if (result.action === 'compact' && result.compactionResult) {
-                        // Flush memory then compact
-                        await executeMemoryFlush();
-                        const maxTokens = Math.floor(config.agent.compaction.context_window * config.agent.compaction.max_history_share);
-                        const compactResult = await compactMessages(messageHistory, compactionModel, maxTokens);
-                        messageHistory = compactResult.messages;
-                        flushState = markFlushCompleted(flushState);
+                    } else if (result.action === 'compact') {
+                        // Flush memory then compact once
+                        if (hasConversation && flushState.totalTokens > 0) {
+                            await executeMemoryFlush();
+                        }
+                        try {
+                            const maxTokens = Math.floor(config.agent.compaction.context_window * config.agent.compaction.max_history_share);
+                            const compactResult = await compactMessages(
+                                messageHistory,
+                                compactionModel,
+                                maxTokens,
+                                result.compactInstructions,
+                            );
+                            messageHistory = compactResult.messages;
+                            flushState = markFlushCompleted(flushState);
+
+                            const saved = compactResult.tokensBefore - compactResult.tokensAfter;
+                            responseText = saved > 0
+                                ? `🧹 上下文压缩完成。\n` +
+                                `压缩前: ${formatTokenCount(compactResult.tokensBefore)}\n` +
+                                `压缩后: ${formatTokenCount(compactResult.tokensAfter)}\n` +
+                                `节省: ${formatTokenCount(saved)} tokens`
+                                : `ℹ️ 当前上下文较短，无需压缩。\n${getContextUsageInfo(compactResult.tokensAfter, config.agent.compaction)}`;
+                        } catch (error) {
+                            responseText = `❌ 压缩失败: ${error instanceof Error ? error.message : '未知错误'}`;
+                        }
+                    } else if (result.action === 'switch_model' && result.modelAlias) {
+                        responseText = await switchModel(result.modelAlias);
                     }
 
+                    console.log();
+                    console.log(`${colors.white}● ${colors.reset}${responseText}`);
                     console.log();
                     console.log(`${colors.gray}${'━'.repeat(output.columns || 50)}${colors.reset}`);
                     console.log();
@@ -365,6 +480,7 @@ async function main() {
 
             hasConversation = true;
             flushState = updateTokenCount(flushState, userInput);
+            totalInputTokens += estimateTokens(userInput);
 
             // Check auto-compact before processing
             await executeAutoCompact();
@@ -428,6 +544,8 @@ async function main() {
 
                 // Update token count and message history
                 flushState = updateTokenCount(flushState, fullResponse);
+                totalOutputTokens += estimateTokens(fullResponse);
+                lastUpdatedAt = new Date();
                 const { HumanMessage, AIMessage } = await import('@langchain/core/messages');
                 messageHistory.push(new HumanMessage(userInput));
                 if (fullResponse) {

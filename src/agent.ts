@@ -3,7 +3,6 @@ import {
     createDeepAgent,
     FilesystemBackend,
 } from 'deepagents';
-import { ChatOpenAI } from '@langchain/openai';
 import { MemorySaver } from '@langchain/langgraph';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
@@ -17,6 +16,7 @@ import { runCommand, type ExecAuditMetadata } from './tools/exec.js';
 import { checkCommandPolicy, type CommandRiskLevel, type PolicyStatus } from './tools/exec-policy.js';
 import { writeExecAuditEvent, type ExecAuditEventType } from './audit/logger.js';
 import { initializeMCPTools } from './mcp.js';
+import { createChatModel } from './llm.js';
 
 // Define return type to avoid complex type inference issues
 export interface AgentContext {
@@ -325,15 +325,7 @@ export async function createSREAgent(
     const skillsPath = resolve(process.cwd(), cfg.agent.skills_dir);
 
     // Create OpenAI model
-    const model = new ChatOpenAI({
-        model: cfg.openai.model,
-        apiKey: cfg.openai.api_key,
-        configuration: {
-            baseURL: cfg.openai.base_url,
-        },
-        maxRetries: cfg.openai.max_retries ?? 3,
-        temperature: 0,
-    });
+    const model = await createChatModel(cfg, { temperature: 0 });
 
     // Create checkpointer for conversation persistence
     const checkpointer = new MemorySaver();

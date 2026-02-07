@@ -48,16 +48,49 @@ export interface ExecOptions {
     callId?: string;
 }
 
+interface OutputBufferState {
+    text: string;
+    totalLength: number;
+    truncated: boolean;
+}
+
 /**
- * Truncate output if it exceeds the maximum length
+ * Append output chunk while capping in-memory buffer size.
  */
-function truncateOutput(output: string, maxLength: number): { text: string; truncated: boolean } {
-    if (output.length <= maxLength) {
-        return { text: output, truncated: false };
+function appendOutputChunk(state: OutputBufferState, chunk: string, maxLength: number): void {
+    state.totalLength += chunk.length;
+
+    if (state.text.length < maxLength) {
+        const remaining = maxLength - state.text.length;
+        if (chunk.length <= remaining) {
+            state.text += chunk;
+        } else {
+            state.text += chunk.slice(0, remaining);
+            state.truncated = true;
+        }
+    } else {
+        state.truncated = true;
     }
-    const truncateMsg = `\n...[Output truncated. Total length: ${output.length} chars, showing first ${maxLength} chars]`;
+
+    if (state.totalLength > maxLength) {
+        state.truncated = true;
+    }
+}
+
+/**
+ * Format buffered output with truncation metadata.
+ */
+function finalizeOutput(state: OutputBufferState, maxLength: number): { text: string; truncated: boolean } {
+    if (!state.truncated) {
+        return { text: state.text, truncated: false };
+    }
+
+    const truncateMsg = `\n...[Output truncated. Total length: ${state.totalLength} chars, showing first ${maxLength} chars]`;
+    const headLength = Math.max(0, maxLength - truncateMsg.length);
+    const head = state.text.slice(0, headLength);
+
     return {
-        text: output.substring(0, maxLength - truncateMsg.length) + truncateMsg,
+        text: `${head}${truncateMsg}`,
         truncated: true,
     };
 }
@@ -80,7 +113,7 @@ export async function runCommand(
     const policyCheck = checkCommandPolicy(commandStr, config);
 
     const timeoutMs = options.timeoutMs ?? config.defaultTimeoutMs;
-    const maxOutputLength = options.maxOutputLength ?? config.maxOutputLength;
+    const maxOutputLength = Math.max(1, options.maxOutputLength ?? config.maxOutputLength);
 
     const buildMetadata = (params: {
         finishedAtMs?: number;
@@ -164,8 +197,8 @@ export async function runCommand(
     const args = parsed.parsed.args;
 
     return new Promise((resolve) => {
-        let stdout = '';
-        let stderr = '';
+        const stdoutState: OutputBufferState = { text: '', totalLength: 0, truncated: false };
+        const stderrState: OutputBufferState = { text: '', totalLength: 0, truncated: false };
         let timedOut = false;
         let settled = false;
 
@@ -184,19 +217,19 @@ export async function runCommand(
         }, timeoutMs);
 
         child.stdout?.on('data', (data: Buffer) => {
-            stdout += data.toString();
+            appendOutputChunk(stdoutState, data.toString(), maxOutputLength);
         });
 
         child.stderr?.on('data', (data: Buffer) => {
-            stderr += data.toString();
+            appendOutputChunk(stderrState, data.toString(), maxOutputLength);
         });
 
         child.on('error', (err: Error) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            const stdoutTruncated = truncateOutput(stdout, maxOutputLength);
-            const stderrTruncated = truncateOutput(stderr, maxOutputLength);
+            const stdoutTruncated = finalizeOutput(stdoutState, maxOutputLength);
+            const stderrTruncated = finalizeOutput(stderrState, maxOutputLength);
             resolve({
                 success: false,
                 stdout: stdoutTruncated.text,
@@ -217,8 +250,8 @@ export async function runCommand(
             if (settled) return;
             settled = true;
             clearTimeout(timer);
-            const stdoutTruncated = truncateOutput(stdout, maxOutputLength);
-            const stderrTruncated = truncateOutput(stderr, maxOutputLength);
+            const stdoutTruncated = finalizeOutput(stdoutState, maxOutputLength);
+            const stderrTruncated = finalizeOutput(stderrState, maxOutputLength);
             resolve({
                 success: code === 0 && !timedOut,
                 stdout: stdoutTruncated.text,

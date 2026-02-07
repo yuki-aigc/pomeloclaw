@@ -8,6 +8,31 @@ export interface OpenAIConfig {
     max_retries?: number;
 }
 
+export interface AnthropicConfig {
+    base_url: string;
+    model: string;
+    api_key: string;
+    max_retries?: number;
+}
+
+export type LLMProvider = 'openai' | 'anthropic';
+
+export interface LLMModelConfig {
+    alias: string;
+    provider: LLMProvider;
+    base_url: string;
+    model: string;
+    api_key: string;
+    headers?: Record<string, string>;
+    max_retries?: number;
+}
+
+export interface LLMConfig {
+    default_model: string;
+    active_model_alias: string;
+    models: LLMModelConfig[];
+}
+
 export interface CompactionConfig {
     enabled: boolean;
     auto_compact_threshold: number;
@@ -125,7 +150,7 @@ export interface DingTalkConfig {
 }
 
 export interface Config {
-    openai: OpenAIConfig;
+    llm: LLMConfig;
     agent: AgentConfig;
     exec: ExecConfig;
     mcp: MCPConfig;
@@ -141,11 +166,27 @@ const DEFAULT_COMMANDS: ExecCommandsFile = {
 };
 
 const DEFAULT_CONFIG = {
-    openai: {
-        base_url: 'https://api.openai.com/v1',
-        model: 'gpt-4o',
-        api_key: '',
-        max_retries: 3,
+    llm: {
+        default_model: 'default_model',
+        active_model_alias: 'default_model',
+        models: [
+            {
+                alias: 'default_model',
+                provider: 'openai' as const,
+                base_url: 'https://api.openai.com/v1',
+                model: 'gpt-4o',
+                api_key: '',
+                max_retries: 3,
+            },
+            {
+                alias: 'claude35',
+                provider: 'anthropic' as const,
+                base_url: 'https://api.anthropic.com',
+                model: 'claude-3-5-sonnet-latest',
+                api_key: '',
+                max_retries: 3,
+            },
+        ] as LLMModelConfig[],
     },
     agent: {
         workspace: './workspace',
@@ -211,7 +252,14 @@ export function loadConfig(): Config {
     const configPath = join(process.cwd(), 'config.json');
 
     let fileConfig: {
+        llm?: {
+            default_model?: string;
+            active_model_alias?: string;
+            models?: Array<Partial<LLMModelConfig> & { alias?: string; provider?: LLMProvider }>
+            | Record<string, Partial<LLMModelConfig> & { provider?: LLMProvider }>;
+        };
         openai?: Partial<OpenAIConfig>;
+        anthropic?: Partial<AnthropicConfig>;
         agent?: Partial<AgentConfig> & { compaction?: Partial<CompactionConfig> };
         exec?: ExecConfigFile;
         mcp?: Partial<MCPConfig>;
@@ -229,10 +277,49 @@ export function loadConfig(): Config {
 
     const execCommands = loadExecCommands(fileConfig.exec || { enabled: true, defaultTimeoutMs: 30000, maxOutputLength: 50000 });
 
+    const legacyOpenAI: OpenAIConfig = {
+        base_url: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        api_key: '',
+        max_retries: 3,
+        ...fileConfig.openai,
+    };
+    const legacyAnthropic: AnthropicConfig = {
+        base_url: 'https://api.anthropic.com',
+        model: 'claude-3-5-sonnet-latest',
+        api_key: '',
+        max_retries: 3,
+        ...fileConfig.anthropic,
+    };
+
+    const defaultModelsFromLegacy: LLMModelConfig[] = [
+        {
+            alias: 'default_model',
+            provider: 'openai',
+            base_url: legacyOpenAI.base_url,
+            model: legacyOpenAI.model,
+            api_key: legacyOpenAI.api_key,
+            max_retries: legacyOpenAI.max_retries ?? 3,
+        },
+        {
+            alias: 'claude35',
+            provider: 'anthropic',
+            base_url: legacyAnthropic.base_url,
+            model: legacyAnthropic.model,
+            api_key: legacyAnthropic.api_key,
+            max_retries: legacyAnthropic.max_retries ?? 3,
+        },
+    ];
+
     const config: Config = {
-        openai: {
-            ...DEFAULT_CONFIG.openai,
-            ...fileConfig.openai,
+        llm: {
+            default_model: fileConfig.llm?.default_model
+                ?? fileConfig.llm?.active_model_alias
+                ?? DEFAULT_CONFIG.llm.default_model,
+            active_model_alias: fileConfig.llm?.default_model
+                ?? fileConfig.llm?.active_model_alias
+                ?? DEFAULT_CONFIG.llm.active_model_alias,
+            models: [...defaultModelsFromLegacy],
         },
         agent: {
             ...DEFAULT_CONFIG.agent,
@@ -260,18 +347,158 @@ export function loadConfig(): Config {
         dingtalk: fileConfig.dingtalk,
     };
 
-    if (process.env.OPENAI_BASE_URL) {
-        config.openai.base_url = process.env.OPENAI_BASE_URL;
-    }
-    if (process.env.OPENAI_MODEL) {
-        config.openai.model = process.env.OPENAI_MODEL;
-    }
-    if (process.env.OPENAI_API_KEY) {
-        config.openai.api_key = process.env.OPENAI_API_KEY;
+    const pushModel = (list: LLMModelConfig[], model: LLMModelConfig): void => {
+        const alias = model.alias.trim();
+        if (!alias) return;
+        const idx = list.findIndex((item) => item.alias === alias);
+        if (idx >= 0) {
+            list[idx] = { ...model, alias };
+        } else {
+            list.push({ ...model, alias });
+        }
+    };
+
+    const normalizeModel = (
+        raw: Partial<LLMModelConfig> & { alias?: string; provider?: LLMProvider },
+        aliasFallback?: string,
+    ): LLMModelConfig | null => {
+        const alias = (raw.alias ?? aliasFallback ?? '').trim();
+        if (!alias) return null;
+
+        const provider = raw.provider;
+        if (provider !== 'openai' && provider !== 'anthropic') {
+            return null;
+        }
+
+        let headers: Record<string, string> | undefined;
+        if (raw.headers !== undefined) {
+            if (!raw.headers || typeof raw.headers !== 'object' || Array.isArray(raw.headers)) {
+                return null;
+            }
+            const normalizedHeaders: Record<string, string> = {};
+            for (const [key, value] of Object.entries(raw.headers)) {
+                if (typeof value !== 'string') {
+                    return null;
+                }
+                const headerName = key.trim();
+                if (!headerName) continue;
+                normalizedHeaders[headerName] = value;
+            }
+            if (Object.keys(normalizedHeaders).length > 0) {
+                headers = normalizedHeaders;
+            }
+        }
+
+        const fallback = provider === 'openai' ? legacyOpenAI : legacyAnthropic;
+        return {
+            alias,
+            provider,
+            base_url: raw.base_url ?? fallback.base_url,
+            model: raw.model ?? fallback.model,
+            api_key: raw.api_key ?? fallback.api_key,
+            headers,
+            max_retries: raw.max_retries ?? fallback.max_retries ?? 3,
+        };
+    };
+
+    const parsedModels: LLMModelConfig[] = [];
+    const rawModels = fileConfig.llm?.models;
+    if (Array.isArray(rawModels)) {
+        for (const raw of rawModels) {
+            const normalized = normalizeModel(raw);
+            if (!normalized) {
+                console.warn('Warning: Invalid llm.models item, skipping');
+                continue;
+            }
+            pushModel(parsedModels, normalized);
+        }
+    } else if (rawModels && typeof rawModels === 'object') {
+        for (const [alias, raw] of Object.entries(rawModels)) {
+            const normalized = normalizeModel(raw, alias);
+            if (!normalized) {
+                console.warn(`Warning: Invalid llm.models.${alias}, skipping`);
+                continue;
+            }
+            pushModel(parsedModels, normalized);
+        }
     }
 
-    if (!config.openai.api_key) {
-        console.error('Error: OpenAI API key is required. Set it in config.json or OPENAI_API_KEY environment variable.');
+    if (parsedModels.length > 0) {
+        config.llm.models = parsedModels;
+    }
+
+    if (process.env.OPENAI_MODEL) {
+        config.llm.models = config.llm.models.map((item) =>
+            item.provider === 'openai' ? { ...item, model: process.env.OPENAI_MODEL! } : item
+        );
+    }
+    if (process.env.OPENAI_BASE_URL) {
+        config.llm.models = config.llm.models.map((item) =>
+            item.provider === 'openai' ? { ...item, base_url: process.env.OPENAI_BASE_URL! } : item
+        );
+    }
+    if (process.env.OPENAI_API_KEY) {
+        config.llm.models = config.llm.models.map((item) =>
+            item.provider === 'openai' ? { ...item, api_key: process.env.OPENAI_API_KEY! } : item
+        );
+    }
+    if (process.env.ANTHROPIC_MODEL) {
+        config.llm.models = config.llm.models.map((item) =>
+            item.provider === 'anthropic' ? { ...item, model: process.env.ANTHROPIC_MODEL! } : item
+        );
+    }
+    if (process.env.ANTHROPIC_BASE_URL) {
+        config.llm.models = config.llm.models.map((item) =>
+            item.provider === 'anthropic' ? { ...item, base_url: process.env.ANTHROPIC_BASE_URL! } : item
+        );
+    }
+    if (process.env.ANTHROPIC_API_KEY) {
+        config.llm.models = config.llm.models.map((item) =>
+            item.provider === 'anthropic' ? { ...item, api_key: process.env.ANTHROPIC_API_KEY! } : item
+        );
+    }
+
+    if (config.llm.models.length === 0) {
+        console.error('Error: No available model configuration found in llm.models');
+        process.exit(1);
+    }
+
+    let defaultAlias = (config.llm.default_model || '').trim();
+    if (!defaultAlias || !config.llm.models.some((item) => item.alias === defaultAlias)) {
+        defaultAlias = config.llm.models[0].alias;
+    }
+    config.llm.default_model = defaultAlias;
+
+    let activeAlias = (process.env.LLM_MODEL_ALIAS || '').trim();
+    if (!activeAlias && process.env.LLM_PROVIDER) {
+        const preferredProvider = process.env.LLM_PROVIDER.toLowerCase();
+        if (preferredProvider === 'openai' || preferredProvider === 'anthropic') {
+            const matched = config.llm.models.find((item) => item.provider === preferredProvider);
+            if (matched) {
+                activeAlias = matched.alias;
+            }
+        } else {
+            console.warn(`Warning: Invalid LLM_PROVIDER=${process.env.LLM_PROVIDER}, ignored`);
+        }
+    }
+    if (!activeAlias) {
+        activeAlias = defaultAlias;
+    }
+    if (!config.llm.models.some((item) => item.alias === activeAlias)) {
+        activeAlias = defaultAlias;
+    }
+    config.llm.active_model_alias = activeAlias;
+
+    const activeModel = config.llm.models.find((item) => item.alias === activeAlias);
+    if (!activeModel) {
+        console.error(`Error: Active model alias "${activeAlias}" not found`);
+        process.exit(1);
+    }
+    if (!activeModel.api_key) {
+        console.error(
+            `Error: API key is required for active model "${activeAlias}". ` +
+            'Set it in config.json (llm.models[].api_key) or via provider env vars.'
+        );
         process.exit(1);
     }
 

@@ -11,6 +11,12 @@ import { DWClient, TOPIC_CARD, TOPIC_ROBOT } from 'dingtalk-stream';
 import { createAgent } from './agent.js';
 import type { ExecApprovalRequest } from './agent.js';
 import { loadConfig } from './config.js';
+import {
+    getActiveModelAlias,
+    getActiveModelName,
+    hasModelAlias,
+    setActiveModelAlias,
+} from './llm.js';
 import { handleMessage, type Logger, type DingTalkInboundMessage } from './channels/dingtalk/index.js';
 import { requestDingTalkExecApproval, withApprovalContext, tryHandleExecApprovalCardCallback } from './channels/dingtalk/approvals.js';
 
@@ -54,7 +60,7 @@ function createLogger(debug: boolean = false): Logger {
  * Print startup header
  */
 function printHeader(config: ReturnType<typeof loadConfig>) {
-    const model = config.openai.model;
+    const model = getActiveModelName(config);
 
     const o = colors.orange;
     const r = colors.reset;
@@ -106,8 +112,8 @@ async function main() {
     log.info('[DingTalk] Initializing agent...');
     const execApprovalPrompt = async (request: ExecApprovalRequest) =>
         requestDingTalkExecApproval(request);
-    const { agent, cleanup: agentCleanup } = await createAgent(config, { execApprovalPrompt });
-    cleanup = agentCleanup;
+    const initialAgentContext = await createAgent(config, { execApprovalPrompt });
+    cleanup = initialAgentContext.cleanup;
     log.info('[DingTalk] Agent initialized successfully');
 
     // Create DingTalk Stream client
@@ -122,10 +128,65 @@ async function main() {
 
     // Message handler context
     const ctx = {
-        agent,
+        agent: initialAgentContext.agent,
         config,
         dingtalkConfig,
         log,
+        switchModel: async (alias: string) => {
+            const trimmedAlias = alias.trim();
+            if (!trimmedAlias) {
+                throw new Error('模型别名不能为空');
+            }
+            if (!hasModelAlias(config, trimmedAlias)) {
+                throw new Error(`未找到模型别名: ${trimmedAlias}`);
+            }
+
+            const previousAlias = getActiveModelAlias(config);
+            if (previousAlias === trimmedAlias) {
+                return {
+                    alias: trimmedAlias,
+                    model: getActiveModelName(config),
+                };
+            }
+
+            let nextCleanup: (() => Promise<void>) | null = null;
+            try {
+                setActiveModelAlias(config, trimmedAlias);
+                const nextAgentContext = await createAgent(config, { execApprovalPrompt });
+                nextCleanup = nextAgentContext.cleanup;
+
+                const oldCleanup = cleanup;
+                ctx.agent = nextAgentContext.agent;
+                cleanup = nextAgentContext.cleanup;
+
+                if (oldCleanup) {
+                    try {
+                        await oldCleanup();
+                    } catch (error) {
+                        log.warn('[DingTalk] previous agent cleanup failed:', error instanceof Error ? error.message : String(error));
+                    }
+                }
+
+                return {
+                    alias: trimmedAlias,
+                    model: getActiveModelName(config),
+                };
+            } catch (error) {
+                if (nextCleanup) {
+                    try {
+                        await nextCleanup();
+                    } catch {
+                        // ignore cleanup errors when switch fails
+                    }
+                }
+                try {
+                    setActiveModelAlias(config, previousAlias);
+                } catch {
+                    // ignore rollback errors and bubble up original error
+                }
+                throw error;
+            }
+        },
     };
 
     // Register message callback

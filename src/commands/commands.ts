@@ -1,26 +1,43 @@
 import crypto from 'node:crypto';
-import type { ChatOpenAI } from '@langchain/openai';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { CompactionConfig } from '../compaction/index.js';
-import { compactMessages, formatTokenCount, getContextUsageInfo } from '../compaction/index.js';
+import type { LLMProvider } from '../config.js';
+import { formatTokenCount, getContextUsageInfo } from '../compaction/index.js';
+
+export interface ModelOption {
+    alias: string;
+    provider: LLMProvider;
+    model: string;
+}
 
 export interface CommandResult {
     handled: boolean;
     response?: string;
-    action?: 'new_session' | 'compact' | 'info';
+    action?: 'new_session' | 'compact' | 'switch_model' | 'info';
     newThreadId?: string;
-    compactionResult?: {
-        tokensBefore: number;
-        tokensAfter: number;
-        summary: string;
-    };
+    compactInstructions?: string;
+    modelAlias?: string;
 }
 
 export interface CommandContext {
-    model: ChatOpenAI;
+    model: BaseChatModel;
     config: CompactionConfig;
     currentTokens: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    compactionCount: number;
     threadId: string;
     sessionStartTime: Date;
+    lastUpdatedAt: Date;
+    appVersion: string;
+    activeModelAlias: string;
+    activeModel?: ModelOption;
+    activeModelApiKeyMasked?: string;
+    runtimeMode?: string;
+    thinkLevel?: string;
+    queueName?: string;
+    queueDepth?: number;
+    modelOptions: ModelOption[];
 }
 
 /**
@@ -59,65 +76,89 @@ function handleNewCommand(): CommandResult {
 /**
  * Handle /compact command - compact context
  */
-async function handleCompactCommand(
-    args: string,
-    context: CommandContext,
-    messages: import('@langchain/core/messages').BaseMessage[],
-): Promise<CommandResult> {
-    const customInstructions = args || undefined;
-    const maxTokens = Math.floor(context.config.context_window * context.config.max_history_share);
+function handleCompactCommand(args: string): CommandResult {
+    return {
+        handled: true,
+        action: 'compact',
+        compactInstructions: args || undefined,
+    };
+}
 
-    try {
-        const result = await compactMessages(
-            messages,
-            context.model,
-            maxTokens,
-            customInstructions,
-        );
+function handleModelsCommand(context: CommandContext): CommandResult {
+    const modelList = context.modelOptions
+        .map((item) => `${item.alias === context.activeModelAlias ? '•' : ' '} ${item.alias} (${item.provider}) -> ${item.model}`)
+        .join('\n');
 
-        const saved = result.tokensBefore - result.tokensAfter;
-        const response = saved > 0
-            ? `🧹 上下文压缩完成。\n` +
-            `压缩前: ${formatTokenCount(result.tokensBefore)}\n` +
-            `压缩后: ${formatTokenCount(result.tokensAfter)}\n` +
-            `节省: ${formatTokenCount(saved)} tokens`
-            : `ℹ️ 当前上下文较短，无需压缩。\n${getContextUsageInfo(result.tokensAfter, context.config)}`;
+    return {
+        handled: true,
+        action: 'info',
+        response: modelList
+            ? `🤖 **已配置模型**\n\n${modelList}`
+            : 'ℹ️ 当前没有可用模型配置。',
+    };
+}
 
+function handleModelCommand(args: string, context: CommandContext): CommandResult {
+    const alias = args.trim();
+    if (!alias) {
         return {
             handled: true,
-            action: 'compact',
-            response,
-            compactionResult: {
-                tokensBefore: result.tokensBefore,
-                tokensAfter: result.tokensAfter,
-                summary: result.summary,
-            },
-        };
-    } catch (error) {
-        return {
-            handled: true,
-            action: 'compact',
-            response: `❌ 压缩失败: ${error instanceof Error ? error.message : '未知错误'}`,
+            action: 'info',
+            response: `ℹ️ 用法: /model <模型别名>\n当前模型: ${context.activeModelAlias}`,
         };
     }
+
+    const exists = context.modelOptions.some((item) => item.alias === alias);
+    if (!exists) {
+        return {
+            handled: true,
+            action: 'info',
+            response: `❌ 未找到模型别名: ${alias}\n使用 /models 查看可用模型。`,
+        };
+    }
+
+    if (alias === context.activeModelAlias) {
+        return {
+            handled: true,
+            action: 'info',
+            response: `ℹ️ 当前已在使用模型: ${alias}`,
+        };
+    }
+
+    return {
+        handled: true,
+        action: 'switch_model',
+        modelAlias: alias,
+    };
 }
 
 /**
  * Handle /status command - show current status
  */
 function handleStatusCommand(context: CommandContext): CommandResult {
-    const uptime = Math.floor((Date.now() - context.sessionStartTime.getTime()) / 1000);
-    const uptimeStr = uptime >= 3600
-        ? `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`
-        : uptime >= 60
-            ? `${Math.floor(uptime / 60)}m ${uptime % 60}s`
-            : `${uptime}s`;
+    const contextRatio = (context.currentTokens / context.config.context_window) * 100;
+    const contextPercent = contextRatio >= 1
+        ? Math.round(contextRatio)
+        : Number(contextRatio.toFixed(1));
+    const model = context.activeModel;
+    const modelLabel = model
+        ? `${model.provider}/${model.model}`
+        : context.activeModelAlias;
+    const keyLabel = context.activeModelApiKeyMasked || '(not set)';
+    const runtimeMode = context.runtimeMode || 'direct';
+    const thinkLevel = context.thinkLevel || 'low';
+    const queueName = context.queueName || 'collect';
+    const queueDepth = context.queueDepth ?? 0;
 
-    const response = `📊 **会话状态**
+    const response = `🤖 SRE Bot ${context.appVersion}
+🧠 Model: ${modelLabel} · 🔑 api-key ${keyLabel} (${model?.provider || 'n/a'}:${context.activeModelAlias})
+🧮 Tokens: ${formatTokenCount(context.totalInputTokens)} in / ${formatTokenCount(context.totalOutputTokens)} out
+📚 Context: ${formatTokenCount(context.currentTokens)}/${formatTokenCount(context.config.context_window)} (${contextPercent}%) · 🧹 Compactions: ${context.compactionCount}
+🧵 Session: ${context.threadId} • updated ${formatRelativeTime(context.lastUpdatedAt)}
+⚙️ Runtime: ${runtimeMode} · Think: ${thinkLevel}
+🪢 Queue: ${queueName} (depth ${queueDepth})
 
 ${getContextUsageInfo(context.currentTokens, context.config)}
-会话 ID: ${context.threadId.slice(0, 20)}...
-运行时间: ${uptimeStr}
 自动压缩阈值: ${formatTokenCount(context.config.auto_compact_threshold)}`;
 
     return {
@@ -125,6 +166,16 @@ ${getContextUsageInfo(context.currentTokens, context.config)}
         action: 'info',
         response,
     };
+}
+
+function formatRelativeTime(updatedAt: Date): string {
+    const diffMs = Math.max(0, Date.now() - updatedAt.getTime());
+    const diffSec = Math.floor(diffMs / 1000);
+    if (diffSec < 5) return 'just now';
+    if (diffSec < 60) return `${diffSec}s ago`;
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+    return `${Math.floor(diffSec / 86400)}d ago`;
 }
 
 /**
@@ -135,6 +186,8 @@ function handleHelpCommand(): CommandResult {
 
 /new - 开始新会话（清空上下文）
 /compact [说明] - 手动压缩上下文（可提供压缩重点说明）
+/models - 列出已配置模型
+/model <别名> - 切换当前模型
 /status - 显示当前会话状态
 /help - 显示此帮助信息
 
@@ -167,7 +220,13 @@ export async function handleCommand(
             return handleNewCommand();
 
         case '/compact':
-            return handleCompactCommand(parsed.args, context, messages);
+            return handleCompactCommand(parsed.args);
+
+        case '/models':
+            return handleModelsCommand(context);
+
+        case '/model':
+            return handleModelCommand(parsed.args, context);
 
         case '/status':
             return handleStatusCommand(context);
