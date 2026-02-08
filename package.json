@@ -26,6 +26,7 @@
         "@langchain/mcp-adapters": "^1.1.2",
         "@langchain/openai": "^1.2.5",
         "axios": "^1.7.0",
+        "croner": "^10.0.1",
         "deepagents": "^1.7.0",
         "dingtalk-stream": "^2.1.4",
         "zod": "^3.23.0"

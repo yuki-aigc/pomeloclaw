@@ -57,6 +57,7 @@ import {
     listConfiguredModels,
 } from '../../llm.js';
 import { HumanMessage as LCHumanMessage } from '@langchain/core/messages';
+import { withDingTalkConversationContext } from './context.js';
 
 // Session state cache (conversationId -> SessionState)
 const sessionCache = new Map<string, SessionState>();
@@ -798,7 +799,21 @@ export async function handleMessage(
     data: DingTalkInboundMessage,
     ctx: MessageHandlerContext
 ): Promise<void> {
-    return enqueueConversationTask(data.conversationId, () => handleMessageInternal(data, ctx));
+    const senderId = data.senderStaffId || data.senderId;
+    const senderName = data.senderNick || 'Unknown';
+    const isDirect = data.conversationType === '1';
+    return enqueueConversationTask(data.conversationId, () =>
+        withDingTalkConversationContext(
+            {
+                conversationId: data.conversationId,
+                isDirect,
+                senderId,
+                senderName,
+                sessionWebhook: data.sessionWebhook,
+            },
+            () => handleMessageInternal(data, ctx)
+        )
+    );
 }
 
 async function handleMessageInternal(

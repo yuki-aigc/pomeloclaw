@@ -152,6 +152,18 @@ export interface DingTalkConfig {
         requireRecognition?: boolean;
         prependRecognitionHint?: boolean;
     };
+    cron?: {
+        defaultTarget?: string;
+        useMarkdown?: boolean;
+        title?: string;
+    };
+}
+
+export interface CronConfig {
+    enabled: boolean;
+    store: string;
+    timezone?: string;
+    runLog?: string;
 }
 
 export interface Config {
@@ -159,6 +171,7 @@ export interface Config {
     agent: AgentConfig;
     exec: ExecConfig;
     mcp: MCPConfig;
+    cron: CronConfig;
     dingtalk?: DingTalkConfig;
 }
 
@@ -169,6 +182,8 @@ const DEFAULT_COMMANDS: ExecCommandsFile = {
     ],
     deniedCommands: ['rm', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'],
 };
+
+const DEFAULT_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
 const DEFAULT_CONFIG = {
     llm: {
@@ -222,6 +237,12 @@ const DEFAULT_CONFIG = {
         onConnectionError: 'throw' as const,
         servers: {},
     },
+    cron: {
+        enabled: true,
+        store: './workspace/cron/jobs.json',
+        timezone: DEFAULT_TIMEZONE,
+        runLog: './workspace/cron/runs.jsonl',
+    },
 };
 
 /**
@@ -268,6 +289,7 @@ export function loadConfig(): Config {
         agent?: Partial<AgentConfig> & { compaction?: Partial<CompactionConfig> };
         exec?: ExecConfigFile;
         mcp?: Partial<MCPConfig>;
+        cron?: Partial<CronConfig>;
         dingtalk?: DingTalkConfig;
     } = {};
 
@@ -348,6 +370,13 @@ export function loadConfig(): Config {
             ...DEFAULT_CONFIG.mcp,
             ...fileConfig.mcp,
             servers: fileConfig.mcp?.servers || DEFAULT_CONFIG.mcp.servers,
+        },
+        cron: {
+            ...DEFAULT_CONFIG.cron,
+            ...fileConfig.cron,
+            store: fileConfig.cron?.store || DEFAULT_CONFIG.cron.store,
+            runLog: fileConfig.cron?.runLog || DEFAULT_CONFIG.cron.runLog,
+            timezone: fileConfig.cron?.timezone || DEFAULT_CONFIG.cron.timezone,
         },
         dingtalk: fileConfig.dingtalk,
     };

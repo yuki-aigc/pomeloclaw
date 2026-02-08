@@ -17,6 +17,7 @@ import { checkCommandPolicy, type CommandRiskLevel, type PolicyStatus } from './
 import { writeExecAuditEvent, type ExecAuditEventType } from './audit/logger.js';
 import { initializeMCPTools } from './mcp.js';
 import { createChatModel } from './llm.js';
+import { createCronTools } from './cron/tools.js';
 
 // Define return type to avoid complex type inference issues
 export interface AgentContext {
@@ -369,9 +370,10 @@ export async function createSREAgent(
     // Create MCP tools
     const mcpBootstrap = await initializeMCPTools(cfg);
     const mcpTools = mcpBootstrap.tools;
+    const cronTools = createCronTools(cfg);
 
     // Combine all tools
-    const allTools = [...memoryTools, execTool, ...mcpTools];
+    const allTools = [...memoryTools, execTool, ...cronTools, ...mcpTools];
 
     // Load initial memory context for system prompt
     const memoryContext = loadMemoryContext(workspacePath);
@@ -411,6 +413,11 @@ ${toolSummaryLines.join('\n')}
 - 禁止执行黑名单中的命令: ${cfg.exec.deniedCommands.join(', ')}
 - 优先只读、安全命令；能不改动环境就不改动。
 - 注意命令输出长度和超时限制。
+
+## 定时任务规则
+- 当用户提出“提醒我”“定时执行”“每天/每周/每小时任务”时，优先使用 cron_job_* 工具。
+- 新建或修改前，先用 cron_job_list 检查现有任务，避免重复。
+- 变更任务时给出任务 id、调度方式和发送目标（群/人）确认。
 
 ## 子代理与技能
 - 可使用子代理: skill-writer-agent（用于创建/维护 SKILL.md）。

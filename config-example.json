@@ -81,6 +81,12 @@
             }
         }
     },
+    "cron": {
+        "enabled": true,
+        "store": "./workspace/cron/jobs.json",
+        "timezone": "Asia/Shanghai",
+        "runLog": "./workspace/cron/runs.jsonl"
+    },
     "dingtalk": {
         "enabled": false,
         "clientId": "",
@@ -96,6 +102,11 @@
             "enabled": true,
             "requireRecognition": true,
             "prependRecognitionHint": true
+        },
+        "cron": {
+            "defaultTarget": "cidxxxxxxxxxxxx",
+            "useMarkdown": true,
+            "title": "SREBot 定时任务"
         },
         "execApprovals": {
             "enabled": false,

@@ -103,6 +103,12 @@ cp .qwen/config/settings_example.json ~/.qwen/settings.json
             }
         }
     },
+    "cron": {
+        "enabled": true, // 是否启用定时任务调度
+        "store": "./workspace/cron/jobs.json", // 定时任务持久化存储
+        "timezone": "Asia/Shanghai", // 默认时区
+        "runLog": "./workspace/cron/runs.jsonl" // 运行日志（JSONL）
+    },
     "dingtalk": {
         "enabled": false, //是否开启钉钉机器人
         "clientId": "", // 钉钉clientId
@@ -118,6 +124,11 @@ cp .qwen/config/settings_example.json ~/.qwen/settings.json
             "enabled": true, // 是否启用语音输入
             "requireRecognition": true, // 语音消息必须有钉钉识别文本，否则提示重试
             "prependRecognitionHint": true // 传给模型前是否加“用户语音转写”前缀
+        },
+        "cron": {
+            "defaultTarget": "cidxxxxxxxxxxxx", // 默认发送到该群聊（openConversationId）
+            "useMarkdown": true, // 定时任务推送是否用 markdown
+            "title": "SREBot 定时任务" // 默认推送标题
         },
         "execApprovals": {
             "enabled": false, // 是否允许执行命令行审批
@@ -188,6 +199,7 @@ deepagents_srebot/
 │   ├── agent.ts                 # 主代理创建
 │   ├── config.ts                # 配置加载
 │   ├── mcp.ts                   # MCP 工具加载与连接管理
+│   ├── cron/                    # 定时任务调度与工具
 │   ├── commands/                # 斜杠命令 /new /compact /status
 │   ├── compaction/              # 压缩与摘要
 │   ├── middleware/              # 记忆加载/flush
@@ -224,6 +236,23 @@ deepagents_srebot/
 你: /model claude35
 助手: 已切换到 claude35
 ```
+
+### 定时任务（DingTalk）
+
+```
+你: 每天早上 9 点给群里推送昨晚告警摘要
+助手: 已创建 cron 任务（返回任务 id、下一次执行时间）
+
+你: 把这个任务改成工作日 10:30
+助手: 已更新任务调度
+
+你: 列出所有定时任务
+助手: 返回任务列表（id、调度、目标、下次执行）
+```
+
+- 定时任务通过模型调用 `cron_job_*` 工具完成增删改查。
+- 若未显式指定发送目标，会优先使用当前会话（群聊用 `conversationId`，私聊用 `senderId`）。
+- 可在 `config.json` 中配置 `dingtalk.cron.defaultTarget`，让任务默认发到固定群（`openConversationId`，通常以 `cid` 开头）。
 
 ### 技能编写子代理
 

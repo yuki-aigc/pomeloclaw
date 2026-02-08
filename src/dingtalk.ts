@@ -8,6 +8,7 @@
  */
 
 import { DWClient, TOPIC_CARD, TOPIC_ROBOT } from 'dingtalk-stream';
+import { randomUUID } from 'node:crypto';
 import { createAgent } from './agent.js';
 import type { ExecApprovalRequest } from './agent.js';
 import { loadConfig } from './config.js';
@@ -18,7 +19,12 @@ import {
     setActiveModelAlias,
 } from './llm.js';
 import { handleMessage, type Logger, type DingTalkInboundMessage } from './channels/dingtalk/index.js';
+import { sendProactiveMessage } from './channels/dingtalk/client.js';
 import { requestDingTalkExecApproval, withApprovalContext, tryHandleExecApprovalCardCallback } from './channels/dingtalk/approvals.js';
+import { CronService } from './cron/service.js';
+import { setCronService } from './cron/runtime.js';
+import { resolveCronStorePath } from './cron/store.js';
+import type { CronJob } from './cron/types.js';
 
 // ANSI terminal colors
 const colors = {
@@ -33,6 +39,9 @@ const colors = {
     orange: '\x1b[38;5;208m',
     cyan: '\x1b[36m',
 };
+
+// Cache discovered group conversation IDs to avoid noisy duplicate logs.
+const seenGroupConversations = new Map<string, string>();
 
 /**
  * Create logger for DingTalk channel
@@ -78,9 +87,57 @@ function printHeader(config: ReturnType<typeof loadConfig>) {
     console.log();
 }
 
+function extractTextContent(content: unknown): string {
+    if (typeof content === 'string') {
+        return content.trim();
+    }
+    if (!Array.isArray(content)) {
+        return '';
+    }
+    const blocks: string[] = [];
+    for (const block of content) {
+        if (typeof block === 'string') {
+            blocks.push(block);
+            continue;
+        }
+        if (!block || typeof block !== 'object') {
+            continue;
+        }
+        const text = (block as { text?: unknown }).text;
+        if (typeof text === 'string' && text.trim()) {
+            blocks.push(text);
+        }
+    }
+    return blocks.join('\n').trim();
+}
+
+function extractAgentResponseText(result: unknown): string {
+    if (!result || typeof result !== 'object') {
+        return '';
+    }
+    const messages = (result as { messages?: unknown }).messages;
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return '';
+    }
+    const lastMessage = messages[messages.length - 1] as { content?: unknown } | undefined;
+    if (!lastMessage) {
+        return '';
+    }
+    return extractTextContent(lastMessage.content);
+}
+
+function buildCronDeliveryTarget(job: CronJob, config: ReturnType<typeof loadConfig>): string | undefined {
+    const fromJob = job.delivery.target?.trim();
+    if (fromJob) return fromJob;
+    const fromConfig = config.dingtalk?.cron?.defaultTarget?.trim();
+    if (fromConfig) return fromConfig;
+    return undefined;
+}
+
 async function main() {
     const config = loadConfig();
     let cleanup: (() => Promise<void>) | null = null;
+    let cronService: CronService | null = null;
 
     // Validate DingTalk configuration
     if (!config.dingtalk) {
@@ -114,6 +171,7 @@ async function main() {
         requestDingTalkExecApproval(request);
     const initialAgentContext = await createAgent(config, { execApprovalPrompt });
     cleanup = initialAgentContext.cleanup;
+    let currentAgent = initialAgentContext.agent;
     log.info('[DingTalk] Agent initialized successfully');
 
     // Create DingTalk Stream client
@@ -128,7 +186,7 @@ async function main() {
 
     // Message handler context
     const ctx = {
-        agent: initialAgentContext.agent,
+        agent: currentAgent,
         config,
         dingtalkConfig,
         log,
@@ -156,6 +214,7 @@ async function main() {
                 nextCleanup = nextAgentContext.cleanup;
 
                 const oldCleanup = cleanup;
+                currentAgent = nextAgentContext.agent;
                 ctx.agent = nextAgentContext.agent;
                 cleanup = nextAgentContext.cleanup;
 
@@ -189,6 +248,74 @@ async function main() {
         },
     };
 
+    cronService = new CronService({
+        enabled: config.cron.enabled,
+        timezone: config.cron.timezone,
+        storePath: resolveCronStorePath(config.cron.store),
+        runLogPath: config.cron.runLog,
+        defaultDelivery: {
+            target: dingtalkConfig.cron?.defaultTarget,
+            useMarkdown: dingtalkConfig.cron?.useMarkdown,
+            title: dingtalkConfig.cron?.title,
+        },
+        logger: {
+            debug: (message: string, ...args: unknown[]) => log.debug(message, ...args),
+            info: (message: string, ...args: unknown[]) => log.info(message, ...args),
+            warn: (message: string, ...args: unknown[]) => log.warn(message, ...args),
+            error: (message: string, ...args: unknown[]) => log.error(message, ...args),
+        },
+        runJob: async (job) => {
+            const target = buildCronDeliveryTarget(job, config);
+            if (!target) {
+                return {
+                    status: 'error',
+                    error: `任务 ${job.id} 未配置发送目标；请设置 cron_job_add.target 或 config.dingtalk.cron.defaultTarget`,
+                };
+            }
+
+            const threadId = `cron-${job.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+            const invokeResult = await currentAgent.invoke(
+                {
+                    messages: [
+                        {
+                            role: 'user',
+                            content: `[定时任务 ${job.name}] ${job.payload.message}`,
+                        },
+                    ],
+                },
+                {
+                    configurable: { thread_id: threadId },
+                    recursionLimit: config.agent.recursion_limit,
+                }
+            );
+
+            const text = extractAgentResponseText(invokeResult) || '任务已执行，但未返回文本结果。';
+            const useMarkdown = job.delivery.useMarkdown ?? dingtalkConfig.cron?.useMarkdown ?? true;
+            const title = job.delivery.title || dingtalkConfig.cron?.title || `定时任务: ${job.name}`;
+            const outboundText = useMarkdown
+                ? `## ${job.name}\n\n${text}`
+                : `【${job.name}】\n${text}`;
+
+            await sendProactiveMessage(
+                dingtalkConfig,
+                target,
+                outboundText,
+                {
+                    title,
+                    useMarkdown,
+                },
+                log
+            );
+
+            return {
+                status: 'ok',
+                summary: text.slice(0, 300),
+            };
+        },
+    });
+    await cronService.start();
+    setCronService(cronService);
+
     // Register message callback
     client.registerCallbackListener(TOPIC_ROBOT, async (res: { headers?: { messageId?: string }; data: string }) => {
         const messageId = res.headers?.messageId;
@@ -204,6 +331,15 @@ async function main() {
             const isDirect = data.conversationType === '1';
             const senderId = data.senderStaffId || data.senderId;
             const senderName = data.senderNick || 'Unknown';
+            if (!isDirect) {
+                const conversationId = data.conversationId || '';
+                const conversationTitle = (data.conversationTitle || '').trim() || '(未命名群)';
+                const previousTitle = seenGroupConversations.get(conversationId);
+                if (!previousTitle || previousTitle !== conversationTitle) {
+                    seenGroupConversations.set(conversationId, conversationTitle);
+                    log.info(`[DingTalk] 群会话映射: ${conversationTitle} -> ${conversationId}`);
+                }
+            }
             await withApprovalContext(
                 {
                     dingtalkConfig: ctx.dingtalkConfig,
@@ -257,6 +393,15 @@ async function main() {
 
         console.log();
         log.info('[DingTalk] Shutting down...');
+
+        if (cronService) {
+            try {
+                await cronService.stop();
+            } catch (error) {
+                log.warn('[DingTalk] cron service stop failed:', error instanceof Error ? error.message : String(error));
+            }
+            setCronService(null);
+        }
 
         // Note: dingtalk-stream doesn't have a disconnect method,
         // the process will exit and close the connection
