@@ -20,6 +20,7 @@ import type {
 } from './types.js';
 import {
     sendBySession,
+    sendProactiveFile,
     createAICard,
     streamAICard,
     finishAICard,
@@ -73,8 +74,14 @@ const MAX_TEXT_FILE_BYTES = 256 * 1024;
 const MAX_TEXT_FILE_CHARS = 6000;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_VIDEO_FRAMES = 3;
+const MAX_REPLY_FILES = 3;
+const MAX_REPLY_FILE_BYTES = 10 * 1024 * 1024;
 const commandAvailabilityCache = new Map<string, boolean>();
 const execFileAsync = promisify(execFileCallback);
+const DINGTALK_FILE_TAG_PATTERN = /<dingtalk-file\s+path=(?:"([^"]+)"|'([^']+)')\s*\/?>/gi;
+const FILE_OUTPUT_LINE_PATTERN = /^FILE_OUTPUT:\s*(.+)$/gim;
+const USER_FILE_TRANSFER_INTENT_PATTERN = /(回传|发送|发我|发给我|传给我|给我|下载|附件|文件)/;
+const WORKSPACE_PATH_HINT_PATTERN = /(^|[\s"'`(（\[])(\.?\/?workspace\/[^\s"'`)\]）>]+)/g;
 
 const TEXT_MIME_HINTS = [
     'text/',
@@ -242,6 +249,198 @@ function extractTextFromModelContent(content: unknown): string {
         }
     }
     return chunks.join('\n').trim();
+}
+
+function buildDingTalkAgentMessages(userText: string): Array<{ role: 'user'; content: string }> {
+    return [
+        { role: 'user', content: userText },
+    ];
+}
+
+function cleanPotentialFilePath(raw: string): string {
+    const trimmed = raw
+        .trim()
+        .replace(/^['"`]+|['"`]+$/g, '')
+        .replace(/[，。；！？,.!?]+$/g, '');
+    if (!trimmed) return '';
+    if (/^[a-z]+:\/\//i.test(trimmed)) return '';
+    return trimmed;
+}
+
+function collectWorkspacePathHints(text: string): string[] {
+    const paths: string[] = [];
+    WORKSPACE_PATH_HINT_PATTERN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = WORKSPACE_PATH_HINT_PATTERN.exec(text)) !== null) {
+        const candidate = cleanPotentialFilePath(match[2] || '');
+        if (candidate) {
+            paths.push(candidate);
+        }
+    }
+    return paths;
+}
+
+function collectReplyPathHints(text: string): { cleanedText: string; candidates: string[] } {
+    const candidates: string[] = [];
+    DINGTALK_FILE_TAG_PATTERN.lastIndex = 0;
+    FILE_OUTPUT_LINE_PATTERN.lastIndex = 0;
+
+    const pushCandidate = (raw: string) => {
+        const cleaned = cleanPotentialFilePath(raw);
+        if (cleaned) {
+            candidates.push(cleaned);
+        }
+    };
+
+    let cleanedText = text.replace(DINGTALK_FILE_TAG_PATTERN, (_match, g1: string, g2: string) => {
+        pushCandidate(g1 || g2 || '');
+        return '';
+    });
+    cleanedText = cleanedText.replace(FILE_OUTPUT_LINE_PATTERN, (_match, g1: string) => {
+        pushCandidate(g1 || '');
+        return '';
+    });
+
+    cleanedText = cleanedText.replace(/\n{3,}/g, '\n\n').trim();
+    return {
+        cleanedText: cleanedText || text.trim(),
+        candidates,
+    };
+}
+
+function resolvePathInWorkspace(rawPath: string, workspaceRoot: string): string | null {
+    const normalizedWorkspace = path.resolve(workspaceRoot);
+    const resolved = path.isAbsolute(rawPath)
+        ? path.resolve(rawPath)
+        : path.resolve(process.cwd(), rawPath);
+    if (resolved === normalizedWorkspace) return null;
+    if (!resolved.startsWith(`${normalizedWorkspace}${path.sep}`)) {
+        return null;
+    }
+    return resolved;
+}
+
+async function collectReplyFiles(params: {
+    responseText: string;
+    workspaceRoot: string;
+    log: Logger;
+}): Promise<{ cleanedText: string; files: string[] }> {
+    const extracted = collectReplyPathHints(params.responseText);
+    return resolveExistingReplyFiles({
+        candidates: extracted.candidates,
+        workspaceRoot: params.workspaceRoot,
+        log: params.log,
+        cleanedText: extracted.cleanedText,
+    });
+}
+
+async function resolveExistingReplyFiles(params: {
+    candidates: string[];
+    workspaceRoot: string;
+    log: Logger;
+    cleanedText?: string;
+}): Promise<{ cleanedText: string; files: string[] }> {
+    const deduped = new Set<string>();
+    const files: string[] = [];
+
+    for (const candidate of params.candidates) {
+        const resolved = resolvePathInWorkspace(candidate, params.workspaceRoot);
+        if (!resolved || deduped.has(resolved)) {
+            continue;
+        }
+        deduped.add(resolved);
+
+        try {
+            const stat = await fsPromises.stat(resolved);
+            if (!stat.isFile()) {
+                continue;
+            }
+            if (stat.size <= 0) {
+                continue;
+            }
+            if (stat.size > MAX_REPLY_FILE_BYTES) {
+                params.log.warn(
+                    `[DingTalk] Skip file return (>10MB): ${resolved} (${formatBytes(stat.size)})`
+                );
+                continue;
+            }
+            files.push(resolved);
+            if (files.length >= MAX_REPLY_FILES) {
+                break;
+            }
+        } catch {
+            continue;
+        }
+    }
+
+    return {
+        cleanedText: params.cleanedText || '',
+        files,
+    };
+}
+
+async function collectRequestedFilesFromUser(params: {
+    userText: string;
+    workspaceRoot: string;
+    log: Logger;
+}): Promise<string[]> {
+    if (!USER_FILE_TRANSFER_INTENT_PATTERN.test(params.userText)) {
+        return [];
+    }
+    const candidates = collectWorkspacePathHints(params.userText);
+    if (candidates.length === 0) {
+        return [];
+    }
+    const resolved = await resolveExistingReplyFiles({
+        candidates,
+        workspaceRoot: params.workspaceRoot,
+        log: params.log,
+    });
+    return resolved.files;
+}
+
+function mergeFilePaths(paths: string[]): string[] {
+    const deduped = new Set<string>();
+    for (const item of paths) {
+        if (!item) continue;
+        deduped.add(item);
+        if (deduped.size >= MAX_REPLY_FILES) break;
+    }
+    return Array.from(deduped);
+}
+
+async function sendReplyFiles(params: {
+    dingtalkConfig: DingTalkConfig;
+    conversationId: string;
+    senderId: string;
+    isDirect: boolean;
+    sessionWebhook: string;
+    filePaths: string[];
+    log: Logger;
+}): Promise<void> {
+    if (params.filePaths.length === 0) return;
+
+    const target = params.isDirect ? params.senderId : params.conversationId;
+    const failed: string[] = [];
+
+    for (const filePath of params.filePaths) {
+        try {
+            await sendProactiveFile(params.dingtalkConfig, target, filePath, params.log);
+        } catch (error) {
+            params.log.warn(`[DingTalk] Failed to send file ${filePath}: ${String(error)}`);
+            failed.push(`${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    if (failed.length > 0) {
+        await sendBySession(
+            params.dingtalkConfig,
+            params.sessionWebhook,
+            `⚠️ 以下文件回传失败:\n${failed.join('\n')}`,
+            { atUserId: !params.isDirect ? params.senderId : null },
+            params.log
+        );
+    }
 }
 
 function looksLikeTextFile(filePath: string, mimeType: string): boolean {
@@ -988,13 +1187,23 @@ async function handleMessageInternal(
         log.debug(`[DingTalk] Invoking agent with thread_id: ${session.threadId}`);
 
         let fullResponse = '';
+        let responseFiles: string[] = [];
+        const workspaceRoot = path.resolve(process.cwd(), config.agent.workspace);
+        const requestedFilesFromUser = await collectRequestedFilesFromUser({
+            userText: content.text,
+            workspaceRoot,
+            log,
+        });
+        if (requestedFilesFromUser.length > 0) {
+            log.info(`[DingTalk] User requested file return, matched files: ${requestedFilesFromUser.join(', ')}`);
+        }
 
         if (currentCard) {
             // Card mode: use streaming
             log.info('[DingTalk] Starting streamEvents...');
 
             const eventStream = ctx.agent.streamEvents(
-                { messages: [{ role: 'user', content: content.text }] },
+                { messages: buildDingTalkAgentMessages(content.text) },
                 { ...agentConfig, version: 'v2' }
             );
 
@@ -1087,6 +1296,16 @@ async function handleMessageInternal(
             }
 
             log.info(`[DingTalk] Stream completed, total events: ${eventCount}, response length: ${fullResponse.length}`);
+            const extractedReply = await collectReplyFiles({
+                responseText: fullResponse,
+                workspaceRoot,
+                log,
+            });
+            fullResponse = extractedReply.cleanedText;
+            responseFiles = extractedReply.files;
+            if (!fullResponse && responseFiles.length > 0) {
+                fullResponse = '✅ 文件已生成并回传，请查收附件。';
+            }
 
             // Finalize card
             let shouldFallbackToSessionMessage = false;
@@ -1128,7 +1347,7 @@ async function handleMessageInternal(
         } else {
             // Markdown mode: use invoke
             const result = await ctx.agent.invoke(
-                { messages: [{ role: 'user', content: content.text }] },
+                { messages: buildDingTalkAgentMessages(content.text) },
                 agentConfig
             );
 
@@ -1143,6 +1362,16 @@ async function handleMessageInternal(
 
             if (!fullResponse) {
                 fullResponse = '抱歉，我没有生成有效的回复。';
+            }
+            const extractedReply = await collectReplyFiles({
+                responseText: fullResponse,
+                workspaceRoot,
+                log,
+            });
+            fullResponse = extractedReply.cleanedText;
+            responseFiles = extractedReply.files;
+            if (!fullResponse && responseFiles.length > 0) {
+                fullResponse = '✅ 文件已生成并回传，请查收附件。';
             }
 
             // Send response back to DingTalk
@@ -1159,6 +1388,16 @@ async function handleMessageInternal(
                 log
             );
         }
+
+        await sendReplyFiles({
+            dingtalkConfig,
+            conversationId,
+            senderId,
+            isDirect,
+            sessionWebhook: data.sessionWebhook,
+            filePaths: mergeFilePaths([...requestedFilesFromUser, ...responseFiles]),
+            log,
+        });
 
         // Update token count and message history
         flushState = updateTokenCount(flushState, fullResponse);

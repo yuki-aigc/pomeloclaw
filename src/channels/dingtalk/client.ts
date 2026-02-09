@@ -6,6 +6,7 @@
 import axios from 'axios';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { readFile as readFileAsync, stat as statFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { DingTalkConfig } from '../../config.js';
@@ -25,6 +26,8 @@ let accessTokenExpiry = 0;
 
 // DingTalk API base URL
 const DINGTALK_API = 'https://api.dingtalk.com';
+const DINGTALK_LEGACY_API = 'https://oapi.dingtalk.com';
+const MAX_DINGTALK_FILE_BYTES = 10 * 1024 * 1024;
 
 // AI Card instance cache
 const aiCardInstances = new Map<string, AICardInstance>();
@@ -32,6 +35,11 @@ const activeCardsByTarget = new Map<string, string>();
 const CARD_CACHE_TTL = 60 * 60 * 1000;
 
 type MediaFile = { path: string; mimeType: string };
+type UploadMediaResponse = {
+    errcode?: number;
+    errmsg?: string;
+    media_id?: string;
+};
 
 function getTargetKey(conversationId: string, isDirect: boolean, userId?: string): string {
     return isDirect ? (userId || conversationId) : conversationId;
@@ -93,6 +101,72 @@ export async function downloadMedia(
         log?.error?.(`[DingTalk] Failed to download media: ${String(err)}`);
         return null;
     }
+}
+
+function escapeMultipartFilename(fileName: string): string {
+    return fileName.replace(/["\\\r\n]/g, '_');
+}
+
+function buildMultipartFileBody(fileName: string, fileBuffer: Buffer): { body: Buffer; boundary: string } {
+    const boundary = `----pomelobot-${randomUUID()}`;
+    const safeFileName = escapeMultipartFilename(fileName);
+    const head = Buffer.from(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="media"; filename="${safeFileName}"\r\n` +
+        'Content-Type: application/octet-stream\r\n\r\n',
+        'utf-8'
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8');
+    return { body: Buffer.concat([head, fileBuffer, tail]), boundary };
+}
+
+function deriveFileType(fileName: string): string {
+    const ext = path.extname(fileName).replace(/^\./, '').toLowerCase();
+    return ext || 'txt';
+}
+
+async function uploadMessageFile(
+    config: DingTalkConfig,
+    filePath: string,
+    log?: Logger
+): Promise<{ mediaId: string; fileName: string; fileType: string }> {
+    const fileName = path.basename(filePath);
+    const fileType = deriveFileType(fileName);
+    const stat = await statFile(filePath);
+    if (!stat.isFile()) {
+        throw new Error(`不是文件: ${filePath}`);
+    }
+    if (stat.size <= 0) {
+        throw new Error(`文件为空: ${filePath}`);
+    }
+    if (stat.size > MAX_DINGTALK_FILE_BYTES) {
+        throw new Error(`文件大小超过 10MB 限制: ${fileName}`);
+    }
+
+    const token = await getAccessToken(config, log);
+    const fileBuffer = await readFileAsync(filePath);
+    const multipart = buildMultipartFileBody(fileName, fileBuffer);
+    const uploadUrl = `${DINGTALK_LEGACY_API}/media/upload?access_token=${encodeURIComponent(token)}&type=file`;
+
+    const resp = await axios.post<UploadMediaResponse>(uploadUrl, multipart.body, {
+        headers: {
+            'Content-Type': `multipart/form-data; boundary=${multipart.boundary}`,
+            'Content-Length': String(multipart.body.length),
+        },
+        timeout: 20000,
+        maxBodyLength: Infinity,
+    });
+
+    if (resp.data?.errcode && resp.data.errcode !== 0) {
+        throw new Error(`上传文件失败: ${resp.data.errmsg || 'unknown error'} (errcode=${resp.data.errcode})`);
+    }
+
+    const mediaId = resp.data?.media_id;
+    if (!mediaId) {
+        throw new Error('上传文件失败: 未返回 media_id');
+    }
+
+    return { mediaId, fileName, fileType };
 }
 
 /**
@@ -219,6 +293,50 @@ export async function sendProactiveMessage(
     } else {
         payload.userIds = [target];
     }
+
+    await axios({
+        url,
+        method: 'POST',
+        data: payload,
+        headers: {
+            'x-acs-dingtalk-access-token': token,
+            'Content-Type': 'application/json',
+        },
+    });
+}
+
+export async function sendProactiveFile(
+    config: DingTalkConfig,
+    target: string,
+    filePath: string,
+    log?: Logger
+): Promise<void> {
+    const token = await getAccessToken(config, log);
+    const isGroup = target.startsWith('cid');
+    const url = isGroup
+        ? `${DINGTALK_API}/v1.0/robot/groupMessages/send`
+        : `${DINGTALK_API}/v1.0/robot/oToMessages/batchSend`;
+    const uploaded = await uploadMessageFile(config, filePath, log);
+
+    const payload: Record<string, unknown> = {
+        robotCode: config.robotCode || config.clientId,
+        msgKey: 'sampleFile',
+        msgParam: JSON.stringify({
+            mediaId: uploaded.mediaId,
+            fileName: uploaded.fileName,
+            fileType: uploaded.fileType,
+        }),
+    };
+
+    if (isGroup) {
+        payload.openConversationId = target;
+    } else {
+        payload.userIds = [target];
+    }
+
+    log?.info?.(
+        `[DingTalk] Sending file to ${isGroup ? 'group' : 'user'} ${target}: ${uploaded.fileName} (${uploaded.fileType})`
+    );
 
     await axios({
         url,

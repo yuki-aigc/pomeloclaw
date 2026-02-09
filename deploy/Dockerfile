@@ -1,4 +1,4 @@
-# DeepAgents SREBot Dockerfile
+# Pomelobot Dockerfile
 
 FROM ubuntu:24.04
 

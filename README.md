@@ -1,49 +1,150 @@
-# DeepAgents Bot
+<p align="center">
+  <img src="docs/Pomelobot.png" alt="Pomelobot" width="280" />
+</p>
 
-一个基于 DeepAgentsJS 的智能助手，参考了OpenClaw的设计理念。具有自主记忆和SKILLS编写/执行能力。
+<h1 align="center">Pomelobot</h1>
+
+<p align="center">
+  基于 <a href="https://github.com/DeepAgentsAI/DeepAgentsJS">DeepAgentsJS</a> + <a href="https://github.com/langchain-ai/langgraphjs">LangGraph</a> 构建的智能助手，参考了 OpenClaw 的设计理念。<br/>
+  具备自主记忆、SKILL 编写/执行、定时任务调度和多渠道接入能力。
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/runtime-Node.js_≥20-green?logo=node.js" />
+  <img src="https://img.shields.io/badge/lang-TypeScript-blue?logo=typescript" />
+  <img src="https://img.shields.io/badge/license-MIT-yellow" />
+</p>
+
+---
 
 ## 特性
 
-- 🧠 **记忆系统**: 每日/长期记忆写入与检索，支持自动记忆 flush
-- 🧹 **上下文压缩**: 自动/手动压缩对话历史，展示 token 使用情况
-- 🛠️ **技能系统**: SKILL.md 定义技能，动态加载与子代理协作
-- 🔌 **MCP 集成**: 支持通过 `@langchain/mcp-adapters` 挂载 MCP 工具（stdio / http(sse)）
-- 🤖 **模型提供商**: 支持 OpenAI / Anthropic（通过配置切换）
-- 💬 **交互模式**: CLI 对话 + DingTalk Stream 机器人模式
-- 🧾 **命令执行**: 白名单命令执行，支持审批与超时/输出限制
-- 📁 **文件读写**: 工作区文件系统读写，支撑记忆与技能存储
+| 能力 | 说明 |
+|------|------|
+| 🧠 **记忆系统** | 每日记忆 / 长期记忆写入与检索，会话退出时自动 flush |
+| 🧹 **上下文压缩** | 自动 / 手动压缩对话历史，实时展示 Token 使用情况 |
+| 🛠️ **技能系统** | 以 `SKILL.md` 定义技能，动态加载并通过子代理协作 |
+| 🔌 **MCP 集成** | 通过 `@langchain/mcp-adapters` 挂载 MCP 工具（stdio / http / sse） |
+| 🤖 **多模型支持** | OpenAI / Anthropic（多模型配置池，运行时 `/model` 热切换） |
+| 💬 **多渠道接入** | CLI 交互 + DingTalk Stream 机器人（消息卡片 / Markdown） |
+| ⏰ **定时任务** | Cron 调度，支持持久化、JSONL 运行日志、群聊 / 私聊推送 |
+| 🧾 **命令执行** | 白名单 / 黑名单策略 + 审批机制，超时与输出长度限制 |
+| 📁 **文件读写** | 基于 `FilesystemBackend` 的工作区文件系统，支撑记忆与技能存储 |
+| 🔍 **审计日志** | 命令执行全链路审计（策略判定、审批决策、执行结果） |
 
 ## 快速开始
-  
+
+### 环境要求
+
+- **Node.js** >= 20
+- **pnpm**（推荐）
+- 可选：Docker、kubectl（用于容器化部署）
+
 ### 1. 安装依赖
 
 ```bash
 pnpm install
-# 若要使用 Anthropic 提供商，请额外安装：
-pnpm add @langchain/anthropic
 ```
 
 ### 2. 配置
 
 ```bash
 cp config-example.json config.json
-# Qwen Code配置。这里建议让Agent使用CC等专业CLI工具生成代码。所谓术业有专攻，Agent本身并不是专业的Coding专家。
-cp .qwen/config/settings_example.json ~/.qwen/settings.json
 ```
 
-编辑 `config.json`：
+编辑 `config.json`，按需填写模型 API Key 及各模块配置，完整字段说明见下方 [配置说明](#配置说明)。
 
-```json
-{   
+### 3. 运行
+
+```bash
+# CLI 交互模式
+pnpm dev
+
+# DingTalk 机器人模式
+pnpm dingtalk
+```
+
+## 项目结构
+
+```
+pomelobot/
+├── src/
+│   ├── index.ts                 # CLI 入口
+│   ├── dingtalk.ts              # DingTalk 入口
+│   ├── agent.ts                 # 主代理创建与工具注册
+│   ├── config.ts                # 配置加载与类型定义
+│   ├── llm.ts                   # 多模型管理（OpenAI / Anthropic）
+│   ├── mcp.ts                   # MCP 工具加载与连接管理
+│   ├── audit/
+│   │   └── logger.ts            # 命令执行审计日志
+│   ├── commands/
+│   │   ├── commands.ts          # /new /compact /status /model 等斜杠命令
+│   │   └── index.ts
+│   ├── compaction/
+│   │   ├── compaction.ts        # 上下文压缩核心逻辑
+│   │   ├── summary.ts           # 摘要生成
+│   │   └── index.ts
+│   ├── cron/
+│   │   ├── tools.ts             # cron_job_* 工具定义
+│   │   ├── service.ts           # 调度服务
+│   │   ├── schedule.ts          # Cron 调度器
+│   │   ├── store.ts             # 任务持久化
+│   │   ├── runtime.ts           # 运行时管理
+│   │   └── types.ts
+│   ├── middleware/
+│   │   ├── memory.ts            # 记忆上下文加载
+│   │   ├── memory-flush.ts      # 记忆自动 flush
+│   │   └── index.ts
+│   ├── subagents/
+│   │   └── index.ts             # 子代理（skill-writer-agent）
+│   ├── tools/
+│   │   ├── exec.ts              # 命令执行核心
+│   │   ├── exec-policy.ts       # 白名单 / 黑名单策略与风险评估
+│   │   ├── command-parser.ts    # 命令解析
+│   │   └── index.ts
+│   └── channels/
+│       └── dingtalk/
+│           ├── handler.ts       # 消息处理（文本 / 语音 / 图片 / 文件）
+│           ├── client.ts        # DingTalk Stream 客户端
+│           ├── approvals.ts     # 命令执行审批（文本 / 按钮模式）
+│           ├── context.ts       # 会话上下文管理
+│           └── types.ts
+├── workspace/
+│   ├── MEMORY.md                # 长期记忆
+│   ├── memory/                  # 每日记忆目录
+│   ├── skills/                  # 技能目录（每个技能含 SKILL.md）
+│   └── cron/                    # 定时任务存储与运行日志
+├── template/
+│   └── dingtalk-card/           # DingTalk 消息卡片模板（可直接导入）
+├── deploy/
+│   ├── Dockerfile               # 容器镜像构建
+│   └── deploy-all.yaml          # K8s 部署清单（Deployment + PVC + Secret）
+├── docs/                        # 文档与资源
+├── config-example.json          # 配置示例
+├── exec-commands.json           # 命令白名单 / 黑名单
+├── tsconfig.json
+└── package.json
+```
+
+## 配置说明
+
+配置文件为项目根目录下的 `config.json`，以下为各模块的完整字段说明。
+
+### LLM 多模型配置
+
+支持配置多个模型，运行时通过 `/model <别名>` 热切换。
+
+```jsonc
+{
     "llm": {
-        "default_model": "default_model", // 默认模型别名
-        "models": [ // 多模型配置池，可通过 /model <别名> 实时切换
+        "default_model": "default_model", // 默认激活的模型别名
+        "models": [
             {
-                "alias": "default_model",
-                "provider": "openai",
+                "alias": "default_model",      // 模型别名（用于 /model 切换）
+                "provider": "openai",           // 提供商：openai | anthropic
                 "base_url": "https://api.openai.com/v1",
                 "model": "gpt-4o",
-                "api_key": "",
+                "api_key": "sk-xxx",
                 "max_retries": 3
             },
             {
@@ -51,259 +152,270 @@ cp .qwen/config/settings_example.json ~/.qwen/settings.json
                 "provider": "anthropic",
                 "base_url": "https://api.anthropic.com",
                 "model": "claude-3-5-sonnet-latest",
-                "api_key": "",
-                "headers": { // 可选，按模型透传自定义请求头
+                "api_key": "sk-ant-xxx",
+                "headers": {                    // 可选，按模型透传自定义请求头
                     "anthropic-version": "2023-06-01"
                 },
                 "max_retries": 3
             }
         ]
-    },
+    }
+}
+```
+
+也可通过环境变量覆盖：
+
+```bash
+export LLM_MODEL_ALIAS="default_model"   # 指定激活模型别名
+export OPENAI_API_KEY="sk-xxx"
+export OPENAI_MODEL="gpt-4o"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+```
+
+### Agent 核心配置
+
+```jsonc
+{
     "agent": {
-        "workspace": "./workspace", // 工作区目录
-        "skills_dir": "./workspace/skills", //SKILLS目录
-        "recursion_limit": 50, // 递归限制, LangChain防止Agent无限循环的一道锁。可以适当提高
-        "compaction": { // 上下文压缩配置
-            "enabled": true, // 是否开启上下文压缩
-            "auto_compact_threshold": 80000, // 自动压缩阈值
-            "context_window": 128000, // 上下文窗口
-            "reserve_tokens": 20000, // 保留token，防止压缩后丢失重要信息
-            "max_history_share": 0.5 // 历史共享比例，0.5表示保留50%的历史记录
-        }
-    },
-    "exec": {
-        "enabled": true, //是否开启命令行模式
-        "commandsFile": "./exec-commands.json", // 命令行白名单文件
-        "defaultTimeoutMs": 30000, // 命令行超时时间
-        "maxOutputLength": 50000, // 命令行输出最大长度
-        "approvals": {
-            "enabled": true // 是否允许执行命令行审批
-        }
-    },
-    "mcp": {
-        "enabled": false, // 是否启用 MCP 工具
-        "throwOnLoadError": true, // 工具加载失败时是否直接报错
-        "prefixToolNameWithServerName": true, // 工具名是否加 server 前缀
-        "additionalToolNamePrefix": "", // 额外前缀
-        "useStandardContentBlocks": false,
-        "onConnectionError": "throw", // throw 或 ignore
-        "servers": {
-            "filesystem": { // stdio 示例
-                "transport": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
-            },
-            "weather": { // http/sse 示例
-                "transport": "sse",
-                "url": "https://example.com/mcp/sse",
-                "headers": {
-                    "Authorization": "Bearer YOUR_TOKEN"
-                },
-                "automaticSSEFallback": true
-            }
-        }
-    },
-    "cron": {
-        "enabled": true, // 是否启用定时任务调度
-        "store": "./workspace/cron/jobs.json", // 定时任务持久化存储
-        "timezone": "Asia/Shanghai", // 默认时区
-        "runLog": "./workspace/cron/runs.jsonl" // 运行日志（JSONL）
-    },
-    "dingtalk": {
-        "enabled": false, //是否开启钉钉机器人
-        "clientId": "", // 钉钉clientId
-        "clientSecret": "", // 钉钉clientSecret
-        "robotCode": "", // 钉钉robotCode
-        "corpId": "", // 钉钉corpId
-        "agentId": "", // 钉钉agentId
-        "messageType": "card", // 钉钉消息类型，markdown或card
-        "cardTemplateId": "", // 钉钉卡片模板ID
-        "showThinking": true, // 是否显示思考过程
-        "debug": false, // 是否开启调试
-        "voice": {
-            "enabled": true, // 是否启用语音输入
-            "requireRecognition": true, // 语音消息必须有钉钉识别文本，否则提示重试
-            "prependRecognitionHint": true // 传给模型前是否加“用户语音转写”前缀
-        },
-        "cron": {
-            "defaultTarget": "cidxxxxxxxxxxxx", // 默认发送到该群聊（openConversationId）
-            "useMarkdown": true, // 定时任务推送是否用 markdown
-            "title": "SREBot 定时任务" // 默认推送标题
-        },
-        "execApprovals": {
-            "enabled": false, // 是否允许执行命令行审批
-            "mode": "button", // 审批模式，text或button
-            "templateId": "", // 审批卡片模板ID
-            "timeoutMs": 300000 // 审批超时时间
+        "workspace": "./workspace",           // 工作区根目录
+        "skills_dir": "./workspace/skills",   // 技能目录
+        "recursion_limit": 50,                // LangGraph 递归上限（防止无限循环）
+        "compaction": {
+            "enabled": true,                  // 是否开启上下文压缩
+            "auto_compact_threshold": 80000,  // 自动压缩阈值（tokens）
+            "context_window": 128000,         // 模型上下文窗口大小
+            "reserve_tokens": 20000,          // 压缩后保留的 token 数
+            "max_history_share": 0.5          // 历史保留比例
         }
     }
 }
 ```
 
-### MCP 配置说明
+### 命令执行
 
-- `servers.<name>.transport = "stdio"`: 本地子进程模式，必须配置 `command`，可选 `args/env/cwd/restart`。
-- `servers.<name>.transport = "http"`: 走 Streamable HTTP，可配 `url/headers/reconnect`。
-- `servers.<name>.transport = "sse"`: 走 SSE，可配 `url/headers/reconnect`。
-- `automaticSSEFallback`: 对 `http`/`sse` 连接启用自动降级。
-- MCP 工具会自动注入主 Agent 工具列表，CLI 和 DingTalk 模式都会生效。
-
-命令白名单在 `exec-commands.json` 中维护，该配置也建议外挂并持久化：
-
-```json
+```jsonc
 {
-  "allowedCommands": ["ls", "ps", "kubectl", "docker"],
-  "deniedCommands": ["rm", "sudo"]
+    "exec": {
+        "enabled": true,
+        "commandsFile": "./exec-commands.json",  // 白名单 / 黑名单文件
+        "defaultTimeoutMs": 30000,                // 默认超时（ms）
+        "maxOutputLength": 50000,                 // 输出最大长度
+        "approvals": {
+            "enabled": true                       // 是否开启执行审批
+        }
+    }
 }
 ```
 
-或使用环境变量：
+命令白名单文件 `exec-commands.json`：
 
-```bash
-# 指定当前模型别名（优先级高于 default_model）
-export LLM_MODEL_ALIAS="default_model"
-
-# 可选：按 provider 自动选择模型（仅当未指定 LLM_MODEL_ALIAS）
-export LLM_PROVIDER="openai"  # 或 anthropic
-
-# OpenAI
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="gpt-4o"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-
-# Anthropic
-export ANTHROPIC_API_KEY="your-api-key"
-export ANTHROPIC_MODEL="claude-3-5-sonnet-latest"
-export ANTHROPIC_BASE_URL="https://api.anthropic.com"
+```json
+{
+    "allowedCommands": ["ls", "cat", "grep", "kubectl", "docker", "git", "curl"],
+    "deniedCommands": ["rm", "mv", "chmod", "chown", "sudo", "su"]
+}
 ```
 
-`llm.models[]` 额外支持：
-- `headers`: 自定义请求头（例如 `anthropic-version`）
+### MCP 工具
 
-### 3. 运行
-
-```bash
-# 命令行模式
-pnpm dev
-# 钉钉机器人模式（服务端模式）
-pnpm dingtalk
+```jsonc
+{
+    "mcp": {
+        "enabled": false,
+        "throwOnLoadError": true,
+        "prefixToolNameWithServerName": true,
+        "servers": {
+            "filesystem": {                       // stdio 模式
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+            },
+            "weather": {                          // SSE 模式
+                "transport": "sse",
+                "url": "https://example.com/mcp/sse",
+                "headers": { "Authorization": "Bearer YOUR_TOKEN" },
+                "automaticSSEFallback": true
+            }
+        }
+    }
+}
 ```
 
-## 项目结构
+> - `transport` 支持 `stdio`、`http`、`sse` 三种模式
+> - MCP 工具会自动注入主 Agent 工具列表，CLI 和 DingTalk 模式均可使用
 
+### 定时任务
+
+```jsonc
+{
+    "cron": {
+        "enabled": true,
+        "store": "./workspace/cron/jobs.json",    // 任务持久化文件
+        "timezone": "Asia/Shanghai",
+        "runLog": "./workspace/cron/runs.jsonl"   // 运行日志（JSONL 格式）
+    }
+}
 ```
-deepagents_srebot/
-├── src/
-│   ├── index.ts                 # CLI 入口
-│   ├── dingtalk.ts              # DingTalk 入口
-│   ├── agent.ts                 # 主代理创建
-│   ├── config.ts                # 配置加载
-│   ├── mcp.ts                   # MCP 工具加载与连接管理
-│   ├── cron/                    # 定时任务调度与工具
-│   ├── commands/                # 斜杠命令 /new /compact /status
-│   ├── compaction/              # 压缩与摘要
-│   ├── middleware/              # 记忆加载/flush
-│   ├── subagents/               # 子代理（skill-writer-agent）
-│   ├── tools/                   # exec 工具与策略
-│   └── channels/
-│       └── dingtalk/            # 钉钉消息处理与审批
-├── workspace/
-│   ├── MEMORY.md                # 长期记忆
-│   ├── memory/                  # 每日记忆
-│   └── skills/                  # 技能目录（SKILL.md）
-├── config.json                  # 主配置
-├── exec-commands.json           # 命令白名单/黑名单
-└── package.json
+
+### DingTalk 机器人
+
+```jsonc
+{
+    "dingtalk": {
+        "enabled": false,
+        "clientId": "",
+        "clientSecret": "",
+        "robotCode": "",
+        "corpId": "",
+        "agentId": "",
+        "messageType": "card",              // 消息类型：card | markdown
+        "cardTemplateId": "",               // 消息卡片模板 ID
+        "showThinking": true,               // 是否展示思考过程
+        "debug": false,
+        "voice": {
+            "enabled": true,                // 启用语音输入
+            "requireRecognition": true,     // 要求钉钉识别文本，否则提示重试
+            "prependRecognitionHint": true  // 传给模型前加"用户语音转写"前缀
+        },
+        "cron": {
+            "defaultTarget": "cidxxxx",     // 定时任务默认推送群（openConversationId）
+            "useMarkdown": true,
+            "title": "Pomelobot 定时任务"
+        },
+        "execApprovals": {
+            "enabled": false,               // 是否开启命令审批
+            "mode": "button",               // 审批模式：text | button
+            "templateId": "",               // 审批卡片模板 ID
+            "timeoutMs": 300000
+        }
+    }
+}
 ```
+
+## 斜杠命令
+
+在 CLI 交互模式下，支持以下命令：
+
+| 命令 | 说明 |
+|------|------|
+| `/new` | 开始新会话（清空上下文，退出前自动 flush 记忆） |
+| `/compact [说明]` | 手动压缩上下文（可附加压缩重点说明） |
+| `/models` | 列出已配置的模型列表（含当前激活标记） |
+| `/model <别名>` | 热切换当前模型 |
+| `/status` | 显示会话状态（Token 用量、模型信息、上下文占比等） |
+| `/help` | 显示帮助信息 |
 
 ## 使用示例
 
-### 记忆 + 压缩
+### 记忆 + 上下文压缩
 
 ```
 你: 请记住我叫小S，是一名 SRE 工程师
 助手: 已保存到长期记忆
 
 你: /status
-助手: 会话状态 ... Token 使用 ... 自动压缩阈值 ...
+助手: 🤖 Pomelobot v1.0.0
+      🧠 Model: openai/gpt-4o ...
+      🧮 Tokens: 1.2k in / 0.8k out ...
 
 你: /compact 只保留关键决策
-助手: 上下文压缩完成 ...
-
-你: /models
-助手: 展示已配置模型列表（含当前激活模型）
-
-你: /model claude35
-助手: 已切换到 claude35
+助手: 🧹 上下文压缩完成。压缩前: 12.5k → 压缩后: 3.2k，节省 9.3k tokens
 ```
 
 ### 定时任务（DingTalk）
 
 ```
 你: 每天早上 9 点给群里推送昨晚告警摘要
-助手: 已创建 cron 任务（返回任务 id、下一次执行时间）
+助手: 已创建 cron 任务（ID: xxx，下一次执行: 明天 09:00）
 
 你: 把这个任务改成工作日 10:30
-助手: 已更新任务调度
+助手: 已更新任务调度 → 0 30 10 * * 1-5
 
 你: 列出所有定时任务
-助手: 返回任务列表（id、调度、目标、下次执行）
+助手: [任务列表：ID、调度表达式、目标、下次执行时间]
 ```
 
-- 定时任务通过模型调用 `cron_job_*` 工具完成增删改查。
-- 若未显式指定发送目标，会优先使用当前会话（群聊用 `conversationId`，私聊用 `senderId`）。
-- 可在 `config.json` 中配置 `dingtalk.cron.defaultTarget`，让任务默认发到固定群（`openConversationId`，通常以 `cid` 开头）。
-
-### 技能编写子代理
+### 技能编写
 
 ```
-你: 帮我创建一个天气查询的技能
-助手: 已调用 skill-writer-agent 创建 workspace/skills/weather-query/SKILL.md
+你: 帮我创建一个告警根因分析的技能
+助手: 已调用 skill-writer-agent 创建 workspace/skills/alert-rca/SKILL.md
 ```
 
 ### 命令执行（白名单 + 审批）
 
 ```
-你: 执行 kubectl get events -A
-助手: 触发审批 ... 执行完成并返回结果
+你: 帮我看下集群里的 Pod 状态
+助手: [exec_command] kubectl get pods -A
+      ● Exec 审批
+      命令: kubectl get pods -A
+      风险: low
+      允许执行? (y=允许, n=拒绝, e=编辑) y
+      ✅ Command executed successfully
+      📤 Output: ...
 ```
 
-### DingTalk 机器人
+### 模型切换
 
 ```
+你: /models
+助手: • default_model (openai) -> gpt-4o
+        claude35 (anthropic) -> claude-3-5-sonnet-latest
+
+你: /model claude35
+助手: ✅ 已切换模型: claude35 (claude-3-5-sonnet-latest)
+```
+
+## DingTalk 机器人
+
+```bash
 pnpm dingtalk
 ```
 
-- 需要在[钉钉开发者后台](https://open-dev.dingtalk.com/fe/card) 开启消息卡片功能。在本项目template中提供了两个卡片模板，可以导入使用。
-- 语音输入默认使用钉钉上行消息里的 `recognition` 字段（语音转文字结果）。
-- 可在钉钉会话中使用 `/voice` 查看状态，`/voice on` 或 `/voice off` 实时切换语音输入开关。
-- 图片会自动做视觉理解；文件会尝试抽取文本内容；视频会尝试抽帧并生成摘要（需本机安装 `ffmpeg/ffprobe`）。
-- 在应用的权限管理页面，需要开启以下权限：
-  - ✅ Card.Instance.Write — 创建和投放卡片实例
-  - ✅ Card.Streaming.Write — 对卡片进行流式更新
-- **注意钉钉应用机器人需要配置可见人员并发布**
+### 功能支持
 
-## 关于容器部署
+- **消息卡片**：需在[钉钉开发者后台](https://open-dev.dingtalk.com/fe/card)开启消息卡片功能，`template/dingtalk-card/` 中提供了可直接导入的卡片模板
+- **语音输入**：使用钉钉上行消息的 `recognition` 字段（语音转文字），可通过 `/voice on|off` 控制开关
+- **多媒体处理**：图片自动视觉理解；文件尝试文本抽取；视频抽帧摘要（需安装 `ffmpeg`）
+- **文件回传**：回复中包含 `<dingtalk-file path="workspace/xxx" />` 标记时，自动上传并回传文件（仅限 `workspace/` 下，单文件 ≤ 10MB）
+- **定时推送**：通过 `cron_job_*` 工具管理定时任务，支持群聊 / 私聊推送
+
+### 所需权限
+
+- ✅ Card.Instance.Write — 创建和投放卡片实例
+- ✅ Card.Streaming.Write — 对卡片进行流式更新
+
+> **注意**：钉钉应用机器人需要配置可见人员并发布后才可使用。
+
+## 容器部署
+
+### 构建镜像
+
 ```bash
-#  构建并推送镜像（注意：Mac 用户需要指定 --platform linux/amd64）
-docker build --platform linux/amd64 -f deploy/Dockerfile -t your-registry/deepagents-srebot:latest .
-docker push your-registry/deepagents-srebot:latest
-#  K8S部署：创建 Secret（也可以手动base64）
-kubectl create secret generic deepagents-srebot-config \
+# Mac 用户需指定 --platform linux/amd64
+docker build --platform linux/amd64 -f deploy/Dockerfile -t your-registry/pomelobot:latest .
+docker push your-registry/pomelobot:latest
+```
+
+### K8s 部署
+
+```bash
+# 创建 Secret（存储 config.json）
+kubectl create secret generic pomelobot-config \
   --from-file=config.json=./config.json
 
-#  部署，需要持久化workspace目录（主要是记忆，SKILLS关键目录）。见PVC相关配置
+# 部署（需持久化 workspace 目录，包含记忆与技能数据）
 kubectl apply -f deploy/deploy-all.yaml
 ```
 
-## 后续尽快支持功能。。。
+> 部署清单包含 Deployment、PVC、Secret 等资源定义，详见 `deploy/deploy-all.yaml`。
 
-> 以下为优先级较高的功能，其余功能会随着OpenClaw官方库的迭代逐步更新。
+## Roadmap
 
-- [ ] Memory机制支持混合检索架构，采用SQLite或Milvus+Mysql(还没想好，可能都支持)。实现语义搜索和关键词检索。
-- [ ] 支持独立记忆模式，支持主会话/群聊的记忆隔离。
-- [ ] 支持sandbox机制，支持沙盒环境下的命令执行(这里可能先由K8S实现)。
+- [ ] Memory 混合检索架构：采用 SQLite 或 Milvus + MySQL，支持语义搜索 + 关键词检索
+- [ ] 独立记忆模式：支持主会话 / 群聊的记忆隔离
+- [ ] Sandbox 机制：沙盒环境下的命令执行（优先基于 K8s 实现）
 
 ## 许可证
 
-MIT
+[MIT](LICENSE)
