@@ -18,6 +18,7 @@ import { writeExecAuditEvent, type ExecAuditEventType } from './audit/logger.js'
 import { initializeMCPTools } from './mcp.js';
 import { createChatModel } from './llm.js';
 import { createCronTools } from './cron/tools.js';
+import { createDingTalkFileReturnTools } from './channels/dingtalk/file-return-tools.js';
 
 // Define return type to avoid complex type inference issues
 export interface AgentContext {
@@ -371,9 +372,10 @@ export async function createSREAgent(
     const mcpBootstrap = await initializeMCPTools(cfg);
     const mcpTools = mcpBootstrap.tools;
     const cronTools = createCronTools(cfg);
+    const dingtalkFileTools = createDingTalkFileReturnTools(workspacePath);
 
     // Combine all tools
-    const allTools = [...memoryTools, execTool, ...cronTools, ...mcpTools];
+    const allTools = [...memoryTools, execTool, ...cronTools, ...dingtalkFileTools, ...mcpTools];
 
     // Load initial memory context for system prompt
     const memoryContext = loadMemoryContext(workspacePath);
@@ -429,6 +431,8 @@ ${toolSummaryLines.join('\n')}
 - 默认工作目录: ${workspacePath}
 - 非必要不要越界访问或修改工作区外文件。
 - 修改配置或代码时，优先最小改动并保持现有风格一致。
+- 需要生成并回传给 DingTalk 的文件，统一写到 workspace/tmp。
+- 需要回传附件时，优先调用 dingtalk_write_tmp_file / dingtalk_send_file，不要依赖回复文本标签触发。
 
 ## 媒体输入约定
 - 当消息中出现 [媒体上下文]、<file ...>...</file> 等块时，将其视为用户提供的附件解析结果并据此回答。

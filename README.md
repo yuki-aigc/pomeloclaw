@@ -438,10 +438,11 @@ pnpm dingtalk
 - **消息卡片**：需在[钉钉开发者后台](https://open-dev.dingtalk.com/fe/card)开启消息卡片功能，`template/dingtalk-card/` 中提供了可直接导入的卡片模板
 - **语音输入**：使用钉钉上行消息的 `recognition` 字段（语音转文字），可通过 `/voice on|off` 控制开关
 - **多媒体处理**：图片自动视觉理解；文件尝试文本抽取；视频抽帧摘要（需安装 `ffmpeg`）
-- **文件回传**：回复中包含 `<dingtalk-file path="workspace/xxx" />` 标记时，自动上传并回传文件（仅限 `workspace/` 下，单文件 ≤ 10MB）
+- **文件回传**：优先通过 `dingtalk_write_tmp_file` / `dingtalk_send_file` 工具触发（稳定），文件统一落到 `workspace/tmp/`；同时兼容 `<dingtalk-file ...>` / `FILE_OUTPUT:` 文本标记（单文件 ≤ 10MB）
 - **定时推送**：通过 `cron_job_*` 工具管理定时任务，支持群聊 / 私聊推送
 - **首轮记忆注入**：会话首轮自动注入今天/昨天 Markdown 摘要（受限额控制，不读取向量库）
 - **自动归档任务**：启动时幂等确保 04:00 的 daily memory_save 任务（可通过 `dingtalk.cron.autoMemorySaveAt4=false` 关闭）
+- **斜杠命令**：支持 `/status`、`/models`、`/model <alias>`、`/voice`、`/voice on|off`、`/help`、`/?`
 
 ### 所需权限
 

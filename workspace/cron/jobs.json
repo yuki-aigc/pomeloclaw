@@ -7,7 +7,7 @@
       "description": "自动创建，请勿删除。[system:auto-memory-save-4am:v1]",
       "enabled": true,
       "createdAtMs": 1770709421291,
-      "updatedAtMs": 1770709421291,
+      "updatedAtMs": 1770714299536,
       "schedule": {
         "kind": "cron",
         "expr": "0 4 * * *",
@@ -20,7 +20,7 @@
       "delivery": {
         "target": "cidxxxxxxxxxxxx",
         "useMarkdown": true,
-        "title": "Pomelobot 定时任务"
+        "title": "SREBot 定时任务"
       },
       "state": {
         "nextRunAtMs": 1770753600000

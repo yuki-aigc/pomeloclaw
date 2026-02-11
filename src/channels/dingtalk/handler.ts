@@ -58,7 +58,7 @@ import {
 } from '../../llm.js';
 import { HumanMessage as LCHumanMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
-import { withDingTalkConversationContext } from './context.js';
+import { withDingTalkConversationContext, consumeQueuedDingTalkReplyFiles } from './context.js';
 import { resolveMemoryScope } from '../../middleware/memory-scope.js';
 import { DingTalkSessionStore, buildStableThreadId } from './session-store.js';
 
@@ -932,6 +932,37 @@ function resolvePathInWorkspace(rawPath: string, workspaceRoot: string): string 
     return resolved;
 }
 
+function isPathInsideDir(targetPath: string, dirPath: string): boolean {
+    const normalizedDir = path.resolve(dirPath);
+    const normalizedTarget = path.resolve(targetPath);
+    return normalizedTarget === normalizedDir || normalizedTarget.startsWith(`${normalizedDir}${path.sep}`);
+}
+
+async function ensureReplyFileUnderTmp(params: {
+    filePath: string;
+    workspaceRoot: string;
+    log: Logger;
+}): Promise<string | null> {
+    const tmpRoot = path.resolve(params.workspaceRoot, 'tmp');
+    const resolved = path.resolve(params.filePath);
+    if (isPathInsideDir(resolved, tmpRoot)) {
+        return resolved;
+    }
+
+    try {
+        await fsPromises.mkdir(tmpRoot, { recursive: true });
+        const parsed = path.parse(resolved);
+        const stagedName = `${parsed.name}-${Date.now()}${parsed.ext || ''}`;
+        const stagedPath = path.resolve(tmpRoot, stagedName);
+        await fsPromises.copyFile(resolved, stagedPath);
+        params.log.info(`[DingTalk] Staged file to workspace/tmp for reply: ${stagedPath}`);
+        return stagedPath;
+    } catch (error) {
+        params.log.warn(`[DingTalk] Failed to stage file into workspace/tmp (${resolved}): ${String(error)}`);
+        return null;
+    }
+}
+
 async function collectReplyFiles(params: {
     responseText: string;
     workspaceRoot: string;
@@ -976,7 +1007,15 @@ async function resolveExistingReplyFiles(params: {
                 );
                 continue;
             }
-            files.push(resolved);
+            const staged = await ensureReplyFileUnderTmp({
+                filePath: resolved,
+                workspaceRoot: params.workspaceRoot,
+                log: params.log,
+            });
+            if (!staged) {
+                continue;
+            }
+            files.push(staged);
             if (files.length >= MAX_REPLY_FILES) {
                 break;
             }
@@ -1379,7 +1418,9 @@ type VoiceSlashCommand =
     | { type: 'voice'; mode: 'status' }
     | { type: 'voice'; mode: 'toggle'; enabled: boolean };
 
-type SlashCommand = ModelSlashCommand | { type: 'status' } | VoiceSlashCommand;
+type HelpSlashCommand = { type: 'help' };
+type UnknownSlashCommand = { type: 'unknown'; command: string };
+type SlashCommand = ModelSlashCommand | { type: 'status' } | VoiceSlashCommand | HelpSlashCommand | UnknownSlashCommand;
 
 interface VoiceInputConfig {
     enabled: boolean;
@@ -1398,6 +1439,9 @@ function resolveVoiceInputConfig(config: DingTalkConfig): VoiceInputConfig {
 
 function parseSlashCommand(input: string): SlashCommand | null {
     const text = input.trim();
+    if (!text.startsWith('/')) {
+        return null;
+    }
     if (text === '/models') {
         return { type: 'list' };
     }
@@ -1423,7 +1467,11 @@ function parseSlashCommand(input: string): SlashCommand | null {
         }
         return { type: 'voice', mode: 'status' };
     }
-    return null;
+    if (text === '/help' || text === '/?') {
+        return { type: 'help' };
+    }
+    const command = text.split(/\s+/, 1)[0] || text;
+    return { type: 'unknown', command };
 }
 
 function maskApiKey(apiKey: string): string {
@@ -1435,11 +1483,26 @@ function maskApiKey(apiKey: string): string {
 function formatRelativeTime(updatedAt: number): string {
     const diffMs = Math.max(0, Date.now() - updatedAt);
     const diffSec = Math.floor(diffMs / 1000);
-    if (diffSec < 5) return 'just now';
-    if (diffSec < 60) return `${diffSec}s ago`;
-    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-    return `${Math.floor(diffSec / 86400)}d ago`;
+    if (diffSec < 5) return '刚刚';
+    if (diffSec < 60) return `${diffSec} 秒前`;
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+    return `${Math.floor(diffSec / 86400)} 天前`;
+}
+
+function buildHelpMessage(currentModelAlias: string): string {
+    return [
+        '## 命令帮助',
+        '',
+        '- `/status` 查看当前会话状态',
+        '- `/models` 查看可用模型列表',
+        '- `/model <别名>` 切换模型（例如 `/model qwen`）',
+        '- `/voice` 查看语音输入开关状态',
+        '- `/voice on` / `/voice off` 开关语音输入',
+        '- `/help` 或 `/?` 查看本帮助',
+        '',
+        `当前模型：\`${currentModelAlias}\``,
+    ].join('\n');
 }
 
 function buildStatusMessage(params: {
@@ -1456,16 +1519,24 @@ function buildStatusMessage(params: {
         ? Math.round(contextRatio)
         : Number(contextRatio.toFixed(1));
 
-    return `🤖 SRE Bot ${appVersion}
-🧠 Model: ${activeModel.provider}/${activeModel.model} · 🔑 api-key ${maskApiKey(activeModel.api_key)} (${activeModel.provider}:${activeAlias})
-🧮 Tokens: ${formatTokenCount(session.totalInputTokens)} in / ${formatTokenCount(session.totalOutputTokens)} out
-📚 Context: ${formatTokenCount(session.totalTokens)}/${formatTokenCount(contextConfig.context_window)} (${contextPercent}%) · 🧹 Compactions: ${session.compactionCount}
-🧵 Session: ${session.threadId} • updated ${formatRelativeTime(session.lastUpdated)}
-⚙️ Runtime: dingtalk · Think: low
-🪢 Queue: collect (depth 0)
-
-${getContextUsageInfo(session.totalTokens, contextConfig)}
-自动压缩阈值: ${formatTokenCount(contextConfig.auto_compact_threshold)}`;
+    const modelLabel = `${activeModel.provider}/${activeModel.model}`;
+    const providerAlias = `${activeModel.provider}:${activeAlias}`;
+    return [
+        `## SRE Bot ${appVersion} 状态`,
+        '',
+        `- 模型：\`${modelLabel}\``,
+        `- 别名：\`${providerAlias}\``,
+        `- API Key：\`${maskApiKey(activeModel.api_key)}\``,
+        `- Token：输入 ${formatTokenCount(session.totalInputTokens)} / 输出 ${formatTokenCount(session.totalOutputTokens)}`,
+        `- 上下文：${formatTokenCount(session.totalTokens)} / ${formatTokenCount(contextConfig.context_window)}（${contextPercent}%）`,
+        `- 压缩次数：${session.compactionCount}`,
+        `- 会话：\`${session.threadId}\``,
+        `- 最近更新：${formatRelativeTime(session.lastUpdated)}`,
+        `- 运行模式：dingtalk（think=low，queue=collect depth=0）`,
+        '',
+        getContextUsageInfo(session.totalTokens, contextConfig),
+        `自动压缩阈值：${formatTokenCount(contextConfig.auto_compact_threshold)}`,
+    ].join('\n');
 }
 
 async function tryHandleSlashCommand(params: {
@@ -1514,11 +1585,23 @@ async function tryHandleSlashCommand(params: {
     if (parsed.type === 'list') {
         const activeAlias = getActiveModelAlias(params.ctx.config);
         const lines = listConfiguredModels(params.ctx.config)
-            .map((item) => `${item.alias === activeAlias ? '•' : ' '} ${item.alias} (${item.provider}) -> ${item.model}`)
+            .map((item) => `- ${item.alias === activeAlias ? '✅' : '▫️'} \`${item.alias}\` (${item.provider}) → ${item.model}`)
             .join('\n');
         const message = lines
-            ? `🤖 已配置模型\n\n${lines}`
-            : 'ℹ️ 当前没有可用模型配置。';
+            ? `## 已配置模型\n\n${lines}\n\n当前模型：\`${activeAlias}\``
+            : '## 已配置模型\n\n当前没有可用模型配置。';
+        await sendBySession(params.ctx.dingtalkConfig, params.sessionWebhook, message, mention, params.ctx.log);
+        return true;
+    }
+
+    if (parsed.type === 'help') {
+        const message = buildHelpMessage(getActiveModelAlias(params.ctx.config));
+        await sendBySession(params.ctx.dingtalkConfig, params.sessionWebhook, message, mention, params.ctx.log);
+        return true;
+    }
+
+    if (parsed.type === 'unknown') {
+        const message = `❓ 未知命令：\`${parsed.command}\`\n\n发送 \`/help\` 查看可用命令。`;
         await sendBySession(params.ctx.dingtalkConfig, params.sessionWebhook, message, mention, params.ctx.log);
         return true;
     }
@@ -1621,6 +1704,8 @@ export async function handleMessage(
                 senderId,
                 senderName,
                 sessionWebhook: data.sessionWebhook,
+                workspaceRoot: path.resolve(process.cwd(), ctx.config.agent.workspace),
+                pendingReplyFiles: [],
             },
             () => handleMessageInternal(data, ctx)
         )
@@ -2026,6 +2111,13 @@ async function handleMessageInternal(
             });
             fullResponse = extractedReply.cleanedText;
             responseFiles = extractedReply.files;
+            const queuedToolFiles = await resolveExistingReplyFiles({
+                candidates: consumeQueuedDingTalkReplyFiles(),
+                workspaceRoot,
+                log,
+                cleanedText: fullResponse,
+            });
+            responseFiles = mergeFilePaths([...responseFiles, ...queuedToolFiles.files]);
             if (!fullResponse && responseFiles.length > 0) {
                 fullResponse = '✅ 文件已生成并回传，请查收附件。';
             }
@@ -2102,6 +2194,13 @@ async function handleMessageInternal(
             });
             fullResponse = extractedReply.cleanedText;
             responseFiles = extractedReply.files;
+            const queuedToolFiles = await resolveExistingReplyFiles({
+                candidates: consumeQueuedDingTalkReplyFiles(),
+                workspaceRoot,
+                log,
+                cleanedText: fullResponse,
+            });
+            responseFiles = mergeFilePaths([...responseFiles, ...queuedToolFiles.files]);
             if (!fullResponse && responseFiles.length > 0) {
                 fullResponse = '✅ 文件已生成并回传，请查收附件。';
             }

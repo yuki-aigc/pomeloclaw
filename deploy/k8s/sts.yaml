@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: pomelobot-postgres
+  name: srebot-pgsql
   labels:
-    app: pomelobot-postgres
+    app: srebot-pgsql
 spec:
   serviceName: postgres
   replicas: 1
   selector:
     matchLabels:
-      app: pomelobot-postgres
+      app: srebot-pgsql
   template:
     metadata:
       labels:
-        app: pomelobot-postgres
+        app: srebot-pgsql
     spec:
       terminationGracePeriodSeconds: 30
       containers:
@@ -28,7 +28,7 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: pomelobot-postgres-secret
+                  name: srebot-pgsql-secret
                   key: password
             - name: POSTGRES_DB
               value: "pomelobot"
@@ -59,22 +59,17 @@ spec:
           resources:
             requests:
               memory: "256Mi"
-              cpu: "100m"
-            limits:
-              memory: "1024Mi"
               cpu: "1000m"
+            limits:
+              memory: "4096Mi"
+              cpu: "4000m"
           volumeMounts:
             - name: pgdata
               mountPath: /var/lib/postgresql/data
-  volumeClaimTemplates:
-    - metadata:
-        name: pgdata
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 20Gi
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: srebot-pgsql-pvc
 
 ---
 apiVersion: v1
@@ -82,7 +77,7 @@ kind: Service
 metadata:
   name: postgres
   labels:
-    app: pomelobot-postgres
+    app: srebot-pgsql
 spec:
   type: ClusterIP
   ports:
@@ -90,13 +85,13 @@ spec:
       targetPort: 5432
       name: postgres
   selector:
-    app: pomelobot-postgres
+    app: srebot-pgsql
 
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: pomelobot-postgres-secret
+  name: srebot-pgsql-secret
 type: Opaque
 stringData:
   password: "Admin@123"
