@@ -9,6 +9,7 @@
 
 import { DWClient, TOPIC_CARD, TOPIC_ROBOT } from 'dingtalk-stream';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { createAgent } from './agent.js';
 import type { ExecApprovalRequest } from './agent.js';
 import { loadConfig } from './config.js';
@@ -26,11 +27,15 @@ import {
     type DingTalkInboundMessage,
 } from './channels/dingtalk/index.js';
 import { sendProactiveMessage } from './channels/dingtalk/client.js';
+import { createDingTalkChannelAdapter } from './channels/dingtalk/adapter.js';
 import { requestDingTalkExecApproval, withApprovalContext, tryHandleExecApprovalCardCallback } from './channels/dingtalk/approvals.js';
+import { GatewayService } from './channels/gateway/index.js';
+import type { ChannelInboundMessage } from './channels/gateway/index.js';
 import { CronService } from './cron/service.js';
 import { setCronService } from './cron/runtime.js';
 import { resolveCronStorePath } from './cron/store.js';
 import type { CronJob } from './cron/types.js';
+import type { RuntimeLogWriter } from './log/runtime.js';
 
 // ANSI terminal colors
 const colors = {
@@ -197,20 +202,24 @@ async function ensureAutoMemorySaveJob(params: {
 /**
  * Create logger for DingTalk channel
  */
-function createLogger(debug: boolean = false): Logger {
+function createLogger(debug: boolean = false, logWriter?: RuntimeLogWriter): Logger {
     return {
         debug: (message: string, ...args: unknown[]) => {
+            logWriter?.write('DEBUG', message, args);
             if (debug) {
                 console.log(`${colors.gray}${message}${colors.reset}`, ...args);
             }
         },
         info: (message: string, ...args: unknown[]) => {
+            logWriter?.write('INFO', message, args);
             console.log(`${colors.cyan}${message}${colors.reset}`, ...args);
         },
         warn: (message: string, ...args: unknown[]) => {
+            logWriter?.write('WARN', message, args);
             console.warn(`${colors.yellow}${message}${colors.reset}`, ...args);
         },
         error: (message: string, ...args: unknown[]) => {
+            logWriter?.write('ERROR', message, args);
             console.error(`${colors.red}${message}${colors.reset}`, ...args);
         },
     };
@@ -285,42 +294,77 @@ function buildCronDeliveryTarget(job: CronJob, config: ReturnType<typeof loadCon
     return undefined;
 }
 
-async function main() {
+function buildGatewayInboundFromDingTalk(params: {
+    data: DingTalkInboundMessage;
+    messageIdFromHeader?: string;
+}): ChannelInboundMessage {
+    const { data, messageIdFromHeader } = params;
+    const senderId = data.senderStaffId || data.senderId;
+    const senderName = data.senderNick || 'Unknown';
+    const isDirect = data.conversationType === '1';
+    const messageId = data.msgId || messageIdFromHeader || `dingtalk-${Date.now()}`;
+    const fallbackText = data.text?.content?.trim() || '';
+    const text = fallbackText
+        || data.content?.recognition?.trim()
+        || (data.msgtype ? `[${data.msgtype}]` : '[消息]');
+
+    return {
+        channel: 'dingtalk',
+        messageId,
+        idempotencyKey: data.msgId || messageIdFromHeader || messageId,
+        timestamp: data.createAt || Date.now(),
+        conversationId: data.conversationId,
+        conversationTitle: data.conversationTitle,
+        isDirect,
+        senderId,
+        senderName,
+        sessionWebhook: data.sessionWebhook,
+        text,
+        messageType: data.msgtype || 'text',
+        raw: data,
+    };
+}
+
+export async function startDingTalkService(options?: {
+    registerSignalHandlers?: boolean;
+    exitOnShutdown?: boolean;
+    logWriter?: RuntimeLogWriter;
+}): Promise<{ shutdown: () => Promise<void> }> {
+    const registerSignalHandlers = options?.registerSignalHandlers ?? false;
+    const exitOnShutdown = options?.exitOnShutdown ?? false;
     const config = loadConfig();
     let cleanup: (() => Promise<void>) | null = null;
     let cronService: CronService | null = null;
+    let gateway: GatewayService | null = null;
 
     // Validate DingTalk configuration
     if (!config.dingtalk) {
-        console.error(`${colors.red}Error: DingTalk configuration not found in config.json${colors.reset}`);
-        console.error(`${colors.gray}Please add a "dingtalk" section with clientId and clientSecret.${colors.reset}`);
-        process.exit(1);
+        throw new Error('DingTalk configuration not found in config.json');
     }
 
     const dingtalkConfig = config.dingtalk;
 
     if (!dingtalkConfig.clientId || !dingtalkConfig.clientSecret) {
-        console.error(`${colors.red}Error: DingTalk clientId and clientSecret are required${colors.reset}`);
-        console.error(`${colors.gray}Please configure these in config.json under "dingtalk" section.${colors.reset}`);
-        process.exit(1);
+        throw new Error('DingTalk clientId and clientSecret are required');
     }
 
     if (dingtalkConfig.clientId === 'YOUR_DINGTALK_APP_KEY') {
-        console.error(`${colors.red}Error: Please replace placeholder DingTalk credentials in config.json${colors.reset}`);
-        console.error(`${colors.gray}Set your actual clientId (AppKey) and clientSecret (AppSecret).${colors.reset}`);
-        process.exit(1);
+        throw new Error('Please replace placeholder DingTalk credentials in config.json');
     }
 
     printHeader(config);
 
     // Create logger
-    const log = createLogger(dingtalkConfig.debug);
+    const log = createLogger(dingtalkConfig.debug, options?.logWriter);
 
     // Create agent
     log.info('[DingTalk] Initializing agent...');
     const execApprovalPrompt = async (request: ExecApprovalRequest) =>
         requestDingTalkExecApproval(request);
-    const initialAgentContext = await createAgent(config, { execApprovalPrompt });
+    const initialAgentContext = await createAgent(config, {
+        execApprovalPrompt,
+        runtimeChannel: 'dingtalk',
+    });
     cleanup = initialAgentContext.cleanup;
     let currentAgent = initialAgentContext.agent;
     log.info('[DingTalk] Agent initialized successfully');
@@ -361,7 +405,10 @@ async function main() {
             let nextCleanup: (() => Promise<void>) | null = null;
             try {
                 setActiveModelAlias(config, trimmedAlias);
-                const nextAgentContext = await createAgent(config, { execApprovalPrompt });
+                const nextAgentContext = await createAgent(config, {
+                    execApprovalPrompt,
+                    runtimeChannel: 'dingtalk',
+                });
                 nextCleanup = nextAgentContext.cleanup;
 
                 const oldCleanup = cleanup;
@@ -474,6 +521,44 @@ async function main() {
     });
     setCronService(cronService);
 
+    gateway = new GatewayService({
+        onProcessInbound: async (message) => {
+            if (message.channel !== 'dingtalk') {
+                return { skipReply: true };
+            }
+            const raw = message.raw;
+            if (!raw || typeof raw !== 'object') {
+                throw new Error('DingTalk inbound missing raw payload');
+            }
+            const data = raw as DingTalkInboundMessage;
+            const isDirect = data.conversationType === '1';
+            const senderId = data.senderStaffId || data.senderId;
+            const senderName = data.senderNick || 'Unknown';
+            await withApprovalContext(
+                {
+                    dingtalkConfig: ctx.dingtalkConfig,
+                    conversationId: data.conversationId,
+                    isDirect,
+                    senderId,
+                    senderName,
+                    sessionWebhook: data.sessionWebhook,
+                    log: ctx.log,
+                },
+                () => handleMessage(data, ctx)
+            );
+            return { skipReply: true };
+        },
+        logger: {
+            debug: (message: string, ...args: unknown[]) => log.debug(message, ...args),
+            info: (message: string, ...args: unknown[]) => log.info(message, ...args),
+            warn: (message: string, ...args: unknown[]) => log.warn(message, ...args),
+            error: (message: string, ...args: unknown[]) => log.error(message, ...args),
+        },
+    });
+    const dingtalkAdapter = createDingTalkChannelAdapter({ config: dingtalkConfig, log });
+    gateway.registerAdapter(dingtalkAdapter);
+    await gateway.start();
+
     // Register message callback
     client.registerCallbackListener(TOPIC_ROBOT, async (res: { headers?: { messageId?: string }; data: string }) => {
         const messageId = res.headers?.messageId;
@@ -498,18 +583,17 @@ async function main() {
                     log.info(`[DingTalk] 群会话映射: ${conversationTitle} -> ${conversationId}`);
                 }
             }
-            await withApprovalContext(
-                {
-                    dingtalkConfig: ctx.dingtalkConfig,
-                    conversationId: data.conversationId,
-                    isDirect,
-                    senderId,
-                    senderName,
-                    sessionWebhook: data.sessionWebhook,
-                    log: ctx.log,
-                },
-                () => handleMessage(data, ctx)
+            const dispatchResult = await dingtalkAdapter.handleInbound(
+                buildGatewayInboundFromDingTalk({
+                    data,
+                    messageIdFromHeader: messageId,
+                })
             );
+            if (dispatchResult.status === 'error') {
+                log.error(`[DingTalk] Gateway dispatch failed: ${dispatchResult.reason || '(unknown)'}`);
+            } else if (dispatchResult.status === 'duplicate') {
+                log.debug('[DingTalk] Duplicate inbound message skipped by gateway');
+            }
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -551,6 +635,14 @@ async function main() {
 
         console.log();
         log.info('[DingTalk] Shutting down...');
+
+        if (gateway) {
+            try {
+                await gateway.stop();
+            } catch (error) {
+                log.warn('[DingTalk] gateway stop failed:', error instanceof Error ? error.message : String(error));
+            }
+        }
 
         if (cronService) {
             try {
@@ -596,14 +688,31 @@ async function main() {
         }
 
         console.log(`${colors.gray}Goodbye! 👋${colors.reset}`);
-        process.exit(0);
+        if (exitOnShutdown) {
+            process.exit(0);
+        }
     };
 
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+    if (registerSignalHandlers) {
+        process.on('SIGINT', () => {
+            void shutdown();
+        });
+        process.on('SIGTERM', () => {
+            void shutdown();
+        });
+    }
+
+    return { shutdown };
 }
 
-main().catch((error) => {
-    console.error(`${colors.red}Fatal error:${colors.reset}`, error);
-    process.exit(1);
-});
+const isDirectRun = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
+    startDingTalkService({
+        registerSignalHandlers: true,
+        exitOnShutdown: true,
+    }).catch((error) => {
+        console.error(`${colors.red}Fatal error:${colors.reset}`, error);
+        process.exit(1);
+    });
+}

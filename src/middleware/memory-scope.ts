@@ -1,5 +1,5 @@
 import type { AgentMemorySessionIsolationConfig } from '../config.js';
-import { getDingTalkConversationContext } from '../channels/dingtalk/context.js';
+import { getChannelConversationContext } from '../channels/context.js';
 
 export type MemoryScopeKind = 'main' | 'direct' | 'group';
 
@@ -14,8 +14,26 @@ function sanitizeScopePart(value: string): string {
     return trimmed.replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
 }
 
+function buildDirectScopeKey(channel: string, senderId: string): string {
+    const sender = sanitizeScopePart(senderId);
+    const channelPart = sanitizeScopePart(channel);
+    if (channelPart === 'dingtalk') {
+        return `direct_${sender}`;
+    }
+    return `direct_${channelPart}_${sender}`;
+}
+
+function buildGroupScopeKey(prefix: string, channel: string, conversationId: string): string {
+    const conversation = sanitizeScopePart(conversationId);
+    const channelPart = sanitizeScopePart(channel);
+    if (channelPart === 'dingtalk') {
+        return `${prefix}${conversation}`;
+    }
+    return `${prefix}${channelPart}_${conversation}`;
+}
+
 export function resolveMemoryScope(config: AgentMemorySessionIsolationConfig): MemoryScope {
-    const context = getDingTalkConversationContext();
+    const context = getChannelConversationContext();
     if (!context || !config.enabled) {
         return { key: 'main', kind: 'main' };
     }
@@ -23,7 +41,7 @@ export function resolveMemoryScope(config: AgentMemorySessionIsolationConfig): M
     if (context.isDirect) {
         if (config.direct_scope === 'direct') {
             return {
-                key: `direct_${sanitizeScopePart(context.senderId)}`,
+                key: buildDirectScopeKey(context.channel, context.senderId),
                 kind: 'direct',
             };
         }
@@ -31,7 +49,7 @@ export function resolveMemoryScope(config: AgentMemorySessionIsolationConfig): M
     }
 
     return {
-        key: `${config.group_scope_prefix}${sanitizeScopePart(context.conversationId)}`,
+        key: buildGroupScopeKey(config.group_scope_prefix, context.channel, context.conversationId),
         kind: 'group',
     };
 }

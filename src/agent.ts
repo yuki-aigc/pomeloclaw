@@ -58,6 +58,13 @@ export type ExecApprovalDecision = {
 
 export type ExecApprovalPrompt = (request: ExecApprovalRequest) => Promise<ExecApprovalDecision>;
 
+export type AgentRuntimeChannel = 'cli' | 'dingtalk' | string;
+
+export interface CreateAgentOptions {
+    execApprovalPrompt?: ExecApprovalPrompt;
+    runtimeChannel?: AgentRuntimeChannel;
+}
+
 function toSingleLineDescription(description: string | undefined): string {
     if (!description) return '';
     const normalized = description.replace(/\s+/g, ' ').trim();
@@ -346,10 +353,12 @@ function createExecTool(config: Config, execApprovalPrompt?: ExecApprovalPrompt)
  */
 export async function createSREAgent(
     config?: Config,
-    options?: { execApprovalPrompt?: ExecApprovalPrompt },
+    options?: CreateAgentOptions,
 ): Promise<AgentContext> {
     const cfg = config || loadConfig();
     const execApprovalPrompt = options?.execApprovalPrompt;
+    const runtimeChannel = options?.runtimeChannel || 'cli';
+    const enableDingTalkTools = runtimeChannel === 'dingtalk';
     const workspacePath = resolve(process.cwd(), cfg.agent.workspace);
     const skillsPath = resolve(process.cwd(), cfg.agent.skills_dir);
 
@@ -372,7 +381,7 @@ export async function createSREAgent(
     const mcpBootstrap = await initializeMCPTools(cfg);
     const mcpTools = mcpBootstrap.tools;
     const cronTools = createCronTools(cfg);
-    const dingtalkFileTools = createDingTalkFileReturnTools(workspacePath);
+    const dingtalkFileTools = enableDingTalkTools ? createDingTalkFileReturnTools(workspacePath) : [];
 
     // Combine all tools
     const allTools = [...memoryTools, execTool, ...cronTools, ...dingtalkFileTools, ...mcpTools];
@@ -385,6 +394,14 @@ export async function createSREAgent(
     const mcpServersHint = mcpBootstrap.serverNames.length > 0
         ? `## MCP 服务器\n${mcpBootstrap.serverNames.map((name) => `- ${name}`).join('\n')}\n`
         : '';
+    const channelWorkspaceRules = enableDingTalkTools
+        ? [
+            '- 需要生成并回传给 DingTalk 的文件，统一写到 workspace/tmp。',
+            '- 需要回传附件时，优先调用 dingtalk_write_tmp_file / dingtalk_send_file，不要依赖回复文本标签触发。',
+        ]
+        : [
+            '- 需要生成附件时，统一写到 workspace/tmp；具体回传由接入渠道适配层处理。',
+        ];
 
     const systemPrompt = `你是 SREBot，一个智能 SRE 助手，专注于系统运维、故障排查和告警处理。
 
@@ -431,8 +448,7 @@ ${toolSummaryLines.join('\n')}
 - 默认工作目录: ${workspacePath}
 - 非必要不要越界访问或修改工作区外文件。
 - 修改配置或代码时，优先最小改动并保持现有风格一致。
-- 需要生成并回传给 DingTalk 的文件，统一写到 workspace/tmp。
-- 需要回传附件时，优先调用 dingtalk_write_tmp_file / dingtalk_send_file，不要依赖回复文本标签触发。
+${channelWorkspaceRules.join('\n')}
 
 ## 媒体输入约定
 - 当消息中出现 [媒体上下文]、<file ...>...</file> 等块时，将其视为用户提供的附件解析结果并据此回答。

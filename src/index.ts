@@ -186,7 +186,10 @@ async function main() {
         }
         : undefined;
 
-    const initialAgentContext = await createAgent(config, { execApprovalPrompt });
+    const initialAgentContext = await createAgent(config, {
+        execApprovalPrompt,
+        runtimeChannel: 'cli',
+    });
     let agent = initialAgentContext.agent;
     let cleanup = initialAgentContext.cleanup;
 
@@ -263,7 +266,10 @@ async function main() {
         let nextCleanup: (() => Promise<void>) | null = null;
         try {
             setActiveModelAlias(config, trimmedAlias);
-            const nextAgentContext = await createAgent(config, { execApprovalPrompt });
+            const nextAgentContext = await createAgent(config, {
+                execApprovalPrompt,
+                runtimeChannel: 'cli',
+            });
             nextCleanup = nextAgentContext.cleanup;
             const nextCompactionModel = await createChatModel(config, { temperature: 0 });
 

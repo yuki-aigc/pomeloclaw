@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Config } from '../config.js';
 import { getCronService } from './runtime.js';
 import { formatScheduleSummary } from './schedule.js';
-import { getDingTalkConversationContext } from '../channels/dingtalk/context.js';
+import { getChannelConversationContext } from '../channels/context.js';
 import type { CronJob } from './types.js';
 
 function formatDateTime(ms?: number): string {
@@ -30,8 +30,9 @@ function formatJob(job: CronJob): string {
 }
 
 function resolveDefaultTargetFromConversation(): string | undefined {
-    const context = getDingTalkConversationContext();
+    const context = getChannelConversationContext();
     if (!context) return undefined;
+    if (context.channel !== 'dingtalk') return undefined;
     return context.isDirect ? context.senderId : context.conversationId;
 }
 

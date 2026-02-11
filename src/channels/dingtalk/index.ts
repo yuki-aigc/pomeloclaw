@@ -6,3 +6,4 @@
 export * from './types.js';
 export * from './client.js';
 export * from './handler.js';
+export * from './adapter.js';

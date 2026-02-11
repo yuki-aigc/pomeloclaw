@@ -1,4 +1,9 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+    withChannelConversationContext,
+    getChannelConversationContext,
+    queueChannelReplyFile,
+    consumeQueuedChannelReplyFiles,
+} from '../context.js';
 
 export interface DingTalkConversationContext {
     conversationId: string;
@@ -10,39 +15,47 @@ export interface DingTalkConversationContext {
     pendingReplyFiles?: string[];
 }
 
-const conversationContextStorage = new AsyncLocalStorage<DingTalkConversationContext>();
-
 export function withDingTalkConversationContext<T>(
     context: DingTalkConversationContext,
     fn: () => Promise<T>
 ): Promise<T> {
-    return conversationContextStorage.run(context, fn);
+    return withChannelConversationContext(
+        {
+            channel: 'dingtalk',
+            ...context,
+        },
+        fn
+    );
 }
 
 export function getDingTalkConversationContext(): DingTalkConversationContext | undefined {
-    return conversationContextStorage.getStore();
+    const context = getChannelConversationContext();
+    if (!context || context.channel !== 'dingtalk') {
+        return undefined;
+    }
+    return {
+        conversationId: context.conversationId,
+        isDirect: context.isDirect,
+        senderId: context.senderId,
+        senderName: context.senderName,
+        sessionWebhook: context.sessionWebhook || '',
+        workspaceRoot: context.workspaceRoot,
+        pendingReplyFiles: context.pendingReplyFiles,
+    };
 }
 
 export function queueDingTalkReplyFile(filePath: string): boolean {
-    const context = conversationContextStorage.getStore();
-    if (!context) return false;
-    const normalized = filePath.trim();
-    if (!normalized) return false;
-    if (!Array.isArray(context.pendingReplyFiles)) {
-        context.pendingReplyFiles = [];
+    const context = getChannelConversationContext();
+    if (!context || context.channel !== 'dingtalk') {
+        return false;
     }
-    if (!context.pendingReplyFiles.includes(normalized)) {
-        context.pendingReplyFiles.push(normalized);
-    }
-    return true;
+    return queueChannelReplyFile(filePath);
 }
 
 export function consumeQueuedDingTalkReplyFiles(): string[] {
-    const context = conversationContextStorage.getStore();
-    if (!context || !Array.isArray(context.pendingReplyFiles) || context.pendingReplyFiles.length === 0) {
+    const context = getChannelConversationContext();
+    if (!context || context.channel !== 'dingtalk') {
         return [];
     }
-    const files = [...context.pendingReplyFiles];
-    context.pendingReplyFiles.length = 0;
-    return files;
+    return consumeQueuedChannelReplyFiles();
 }

@@ -1,14 +1,18 @@
 {
-    "name": "deepagents-srebot",
+    "name": "pomelobot",
     "version": "1.0.0",
-    "description": "A DeepAgents-based intelligent agent with memory, skills, and subagent support",
+    "description": "Pomelobot: 智能助手，支持记忆、技能、定时任务与多渠道接入",
     "main": "dist/index.js",
     "type": "module",
     "scripts": {
         "dev": "tsx src/index.ts",
         "dingtalk": "tsx src/dingtalk.ts",
+        "server": "tsx src/server.ts",
+        "channels": "tsx src/server.ts",
         "build": "tsc",
         "start": "node dist/index.js",
+        "start:server": "node dist/server.js",
+        "start:channels": "node dist/server.js",
         "typecheck": "tsc --noEmit"
     },
     "keywords": [

@@ -37,7 +37,7 @@ spec:
         - name: srebot
           image: deepagents-srebot:latest
           imagePullPolicy: IfNotPresent
-          command: ["pnpm", "dingtalk"]
+          command: ["pnpm", "start:server"]
           lifecycle:
             preStop:
               exec:

@@ -14,6 +14,7 @@ config.json.bak
 # workspace目录
 workspace/config/
 workspace/momory/
-
+workspace/cron/*
+workspace/tmp/*
 # Qwen Code目录
 .qwen/config/settings.json

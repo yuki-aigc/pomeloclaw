@@ -547,12 +547,17 @@ function buildMemorySearchEnforcedPrompt(userText: string): string {
 function buildDingTalkAgentMessagesWithPolicy(
     userText: string,
     options?: { enforceMemorySearch?: boolean; startupMemoryInjection?: string | null },
-): Array<{ role: 'system' | 'user'; content: string }> {
-    const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+): Array<{ role: 'user'; content: string }> {
+    const messages: Array<{ role: 'user'; content: string }> = [];
     if (options?.startupMemoryInjection) {
         messages.push({
-            role: 'system',
-            content: options.startupMemoryInjection,
+            role: 'user',
+            content: [
+                '【会话启动上下文】',
+                options.startupMemoryInjection,
+                '',
+                '以上是会话启动补充信息，请结合当前问题作答。',
+            ].join('\n'),
         });
     }
     if (options?.enforceMemorySearch) {
@@ -621,7 +626,7 @@ function buildAgentInvocationMessages(
     options?: { enforceMemorySearch?: boolean; startupMemoryInjection?: string | null },
 ): Array<{ role: 'system' | 'assistant' | 'user'; content: string }> {
     if (hydratedThreadIds.has(session.threadId)) {
-        return buildDingTalkAgentMessagesWithPolicy(userText, options);
+        return normalizeInvocationMessages(buildDingTalkAgentMessagesWithPolicy(userText, options));
     }
 
     const history = session.messageHistory
@@ -629,13 +634,44 @@ function buildAgentInvocationMessages(
         .filter((item): item is { role: 'system' | 'assistant' | 'user'; content: string } => Boolean(item));
 
     if (history.length === 0) {
-        return buildDingTalkAgentMessagesWithPolicy(userText, options);
+        return normalizeInvocationMessages(buildDingTalkAgentMessagesWithPolicy(userText, options));
     }
 
-    return [
+    return normalizeInvocationMessages([
         ...history,
         ...buildDingTalkAgentMessagesWithPolicy(userText, options),
-    ];
+    ]);
+}
+
+function normalizeInvocationMessages(
+    messages: Array<{ role: 'system' | 'assistant' | 'user'; content: string }>
+): Array<{ role: 'system' | 'assistant' | 'user'; content: string }> {
+    if (messages.length === 0) {
+        return messages;
+    }
+
+    const normalized: Array<{ role: 'system' | 'assistant' | 'user'; content: string }> = [];
+    let hasSystemAtFirst = false;
+
+    for (const message of messages) {
+        if (message.role !== 'system') {
+            normalized.push(message);
+            continue;
+        }
+
+        if (!hasSystemAtFirst && normalized.length === 0) {
+            normalized.push(message);
+            hasSystemAtFirst = true;
+            continue;
+        }
+
+        normalized.push({
+            role: 'user',
+            content: `【系统上下文转述】\n${message.content}`,
+        });
+    }
+
+    return normalized;
 }
 
 function cleanPotentialFilePath(raw: string): string {
