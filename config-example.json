@@ -111,8 +111,11 @@
                 "args": [
                     "-y",
                     "@modelcontextprotocol/server-filesystem",
-                    "./workspace"
+                    "${MCP_FS_ROOT}"
                 ],
+                "env": {
+                    "MCP_FS_ROOT": "./workspace"
+                },
                 "restart": {
                     "enabled": true,
                     "maxAttempts": 3,
@@ -123,7 +126,10 @@
                 "transport": "sse",
                 "url": "https://example.com/mcp/sse",
                 "headers": {
-                    "Authorization": "Bearer YOUR_TOKEN"
+                    "Authorization": "Bearer ${WEATHER_API_TOKEN}"
+                },
+                "env": {
+                    "WEATHER_API_TOKEN": "YOUR_TOKEN"
                 },
                 "reconnect": {
                     "enabled": true,

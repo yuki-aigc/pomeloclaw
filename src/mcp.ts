@@ -8,18 +8,59 @@ type MCPBootstrapResult = {
     serverNames: string[];
 };
 
+function normalizeServerEnv(serverName: string, env?: Record<string, string>): Record<string, string> | undefined {
+    if (!env) return undefined;
+    const normalized: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+        const name = key.trim();
+        if (!name) continue;
+        if (typeof value !== 'string') {
+            throw new Error(`[MCP] Server "${serverName}" env.${name} must be a string`);
+        }
+        normalized[name] = value;
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function expandEnvPlaceholders(value: string, env: Record<string, string | undefined>): string {
+    return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => env[name] ?? '');
+}
+
+function resolveServerString(value: string | undefined, env: Record<string, string | undefined>): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    return expandEnvPlaceholders(value, env);
+}
+
+function resolveServerHeaders(
+    headers: Record<string, string> | undefined,
+    env: Record<string, string | undefined>,
+): Record<string, string> | undefined {
+    if (!headers) return undefined;
+    const resolved = Object.fromEntries(
+        Object.entries(headers).map(([key, value]) => [key, expandEnvPlaceholders(value, env)])
+    );
+    return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
 function getServerConnectionConfig(serverName: string, server: MCPServerConfig): Record<string, unknown> {
+    const scopedEnv = normalizeServerEnv(serverName, server.env);
+    const effectiveEnv: Record<string, string | undefined> = {
+        ...process.env,
+        ...(scopedEnv ?? {}),
+    };
+
     if (server.transport === 'stdio') {
-        if (!server.command?.trim()) {
+        const command = resolveServerString(server.command, effectiveEnv)?.trim();
+        if (!command) {
             throw new Error(`[MCP] Server "${serverName}" is stdio but "command" is empty`);
         }
 
         return {
             transport: 'stdio',
-            command: server.command,
-            args: server.args ?? [],
-            env: server.env,
-            cwd: server.cwd,
+            command,
+            args: (server.args ?? []).map((arg) => expandEnvPlaceholders(arg, effectiveEnv)),
+            env: effectiveEnv,
+            cwd: resolveServerString(server.cwd, effectiveEnv),
             stderr: server.stderr,
             restart: server.restart,
             defaultToolTimeout: server.defaultToolTimeout,
@@ -27,14 +68,15 @@ function getServerConnectionConfig(serverName: string, server: MCPServerConfig):
         };
     }
 
-    if (!server.url?.trim()) {
+    const url = resolveServerString(server.url, effectiveEnv)?.trim();
+    if (!url) {
         throw new Error(`[MCP] Server "${serverName}" is ${server.transport} but "url" is empty`);
     }
 
     return {
         transport: server.transport,
-        url: server.url,
-        headers: server.headers,
+        url,
+        headers: resolveServerHeaders(server.headers, effectiveEnv),
         reconnect: server.reconnect,
         automaticSSEFallback: server.automaticSSEFallback,
         defaultToolTimeout: server.defaultToolTimeout,
@@ -103,4 +145,3 @@ export async function initializeMCPTools(config: Config): Promise<MCPBootstrapRe
         throw error;
     }
 }
-

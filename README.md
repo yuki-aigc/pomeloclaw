@@ -335,12 +335,14 @@ export OPENAI_BASE_URL="https://api.openai.com/v1"
             "filesystem": {                       // stdio 模式
                 "transport": "stdio",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "${MCP_FS_ROOT}"],
+                "env": { "MCP_FS_ROOT": "./workspace" }
             },
             "weather": {                          // SSE 模式
                 "transport": "sse",
                 "url": "https://example.com/mcp/sse",
-                "headers": { "Authorization": "Bearer YOUR_TOKEN" },
+                "headers": { "Authorization": "Bearer ${WEATHER_API_TOKEN}" },
+                "env": { "WEATHER_API_TOKEN": "YOUR_TOKEN" },
                 "automaticSSEFallback": true
             }
         }
@@ -349,6 +351,7 @@ export OPENAI_BASE_URL="https://api.openai.com/v1"
 ```
 
 > - `transport` 支持 `stdio`、`http`、`sse` 三种模式
+> - 每个 `mcp.servers.<name>` 都支持 `env`，并可在同一 server 的字符串字段里使用 `${VAR}` 占位符
 > - MCP 工具会自动注入主 Agent 工具列表，CLI / DingTalk / iOS 模式均可使用
 
 ### 定时任务

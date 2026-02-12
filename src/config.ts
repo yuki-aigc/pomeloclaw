@@ -156,6 +156,7 @@ export type MCPOutputHandling =
     };
 
 export interface MCPServerBaseConfig {
+    env?: Record<string, string>;
     defaultToolTimeout?: number;
     outputHandling?: MCPOutputHandling;
 }
@@ -164,7 +165,6 @@ export interface MCPServerStdioConfig extends MCPServerBaseConfig {
     transport: 'stdio';
     command: string;
     args?: string[];
-    env?: Record<string, string>;
     cwd?: string;
     stderr?: 'overlapped' | 'pipe' | 'ignore' | 'inherit';
     restart?: {

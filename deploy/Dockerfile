@@ -30,7 +30,10 @@ ENV NPM_CONFIG_PREFIX=/home/ubuntu/.npm-global
 ENV PATH=/home/ubuntu/.npm-global/bin:$PATH
 ENV HOME=/home/ubuntu
 
-RUN npm install -g pnpm
+# 安装pnpm，claude code,  uvx等
+RUN npm install -g pnpm && \
+curl -LsSf https://astral.sh/uv/install.sh | sh && \
+curl -fsSL https://claude.ai/install.sh | bash
 
 WORKDIR /app
 
