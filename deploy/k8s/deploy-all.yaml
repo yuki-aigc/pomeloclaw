@@ -6,6 +6,8 @@ metadata:
     app: deepagents-srebot
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: deepagents-srebot
@@ -20,6 +22,9 @@ spec:
         runAsGroup: 0
         fsGroup: 0
       initContainers:
+        - name: wait-before-stream-connect
+          image: busybox:latest
+          command: ["sh", "-c", "sleep 15"]
         - name: fix-permissions
           image: busybox:latest
           securityContext:
@@ -37,17 +42,18 @@ spec:
         - name: srebot
           image: deepagents-srebot:latest
           imagePullPolicy: IfNotPresent
-          command: ["pnpm", "start:server"]
-          lifecycle:
-            preStop:
-              exec:
-                command:
-                  - /bin/sh
-                  - -c
-                  - >
-                    echo "[preStop] send SIGTERM to pid 1";
-                    kill -TERM 1 2>/dev/null || true;
-                    sleep 25
+          command: ["node", "dist/server.js"]
+          # lifecycle:
+          #   preStop:
+          #     exec:
+          #       command:
+          #         - /bin/sh
+          #         - -c
+          #         - >
+          #           echo "[preStop] send SIGTERM to pid 1";
+          #           kill -TERM 1 2>/dev/null || true;
+          #           echo "[preStop] sleeping 10s for graceful stream disconnect";
+          #           sleep 10
           volumeMounts:
             # 挂载配置文件
             - name: config-volume

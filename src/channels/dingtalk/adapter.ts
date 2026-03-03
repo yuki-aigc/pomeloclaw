@@ -17,6 +17,7 @@ export interface DingTalkChannelAdapterOptions {
     config: DingTalkConfig;
     log: Logger;
     client: DWClient;
+    isShuttingDown?: () => boolean;
 }
 
 export class DingTalkChannelAdapter implements ChannelAdapter {
@@ -125,8 +126,18 @@ export class DingTalkChannelAdapter implements ChannelAdapter {
         }
     }
 
+    private shouldSkipCallbackAck(): boolean {
+        if (!this.options.isShuttingDown?.()) {
+            return false;
+        }
+        return true;
+    }
+
     private async handleRobotCallback(res: StreamCallbackResponse): Promise<void> {
         const messageId = res.headers?.messageId;
+        if (this.shouldSkipCallbackAck()) {
+            return;
+        }
         this.acknowledgeCallback(messageId);
 
         try {
@@ -151,6 +162,9 @@ export class DingTalkChannelAdapter implements ChannelAdapter {
 
     private async handleCardCallback(res: StreamCallbackResponse): Promise<void> {
         const messageId = res.headers?.messageId;
+        if (this.shouldSkipCallbackAck()) {
+            return;
+        }
         this.acknowledgeCallback(messageId);
 
         try {

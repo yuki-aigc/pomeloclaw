@@ -7,7 +7,7 @@
       "description": "自动创建，请勿删除。[system:auto-memory-save-4am:v1]",
       "enabled": true,
       "createdAtMs": 1770709421291,
-      "updatedAtMs": 1771132833914,
+      "updatedAtMs": 1772503645947,
       "schedule": {
         "kind": "cron",
         "expr": "0 4 * * *",
@@ -19,12 +19,12 @@
       },
       "delivery": {
         "channel": "dingtalk",
-        "target": "cid1oT+vAKivWhMDd1ZK7awqA==",
+        "target": "cidxxxxxxxxxxxx",
         "useMarkdown": true,
         "title": "SREBot 定时任务"
       },
       "state": {
-        "nextRunAtMs": 1771185600000
+        "nextRunAtMs": 1772568000000
       }
     }
   ]

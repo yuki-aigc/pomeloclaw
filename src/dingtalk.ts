@@ -8,11 +8,13 @@
  */
 
 import { DWClient } from 'dingtalk-stream';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { Client as PgClient } from 'pg';
 import type { ExecApprovalRequest } from './agent.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type AgentMemoryConfig } from './config.js';
 import { ConversationRuntime } from './conversation/runtime.js';
 import {
     handleMessage,
@@ -41,6 +43,8 @@ import {
 const AUTO_MEMORY_SAVE_JOB_NAME = '系统任务：每日记忆归档(04:00)';
 const AUTO_MEMORY_SAVE_JOB_MARKER = '[system:auto-memory-save-4am:v1]';
 const AUTO_MEMORY_SAVE_JOB_CRON_EXPR = '0 4 * * *';
+const STREAM_LOCK_WAIT_MS = 60_000;
+const STREAM_LOCK_RETRY_MS = 1_000;
 
 function buildAutoMemorySaveJobDescription(): string {
     return `自动创建，请勿删除。${AUTO_MEMORY_SAVE_JOB_MARKER}`;
@@ -55,6 +59,221 @@ function buildAutoMemorySaveJobPrompt(): string {
         '3. 完成后在回复末尾明确输出: memory_saved。',
         '注意：若你没有调用 memory_save 就结束任务，视为失败。',
     ].join('\n');
+}
+
+function buildPgClientConfig(memoryConfig: AgentMemoryConfig): ConstructorParameters<typeof PgClient>[0] | null {
+    const pg = memoryConfig.pgsql;
+    if (pg.connection_string?.trim()) {
+        return {
+            connectionString: pg.connection_string.trim(),
+            ssl: pg.ssl ? { rejectUnauthorized: false } : undefined,
+        };
+    }
+
+    if (!pg.host || !pg.user || !pg.database) {
+        return null;
+    }
+
+    return {
+        host: pg.host,
+        port: pg.port,
+        user: pg.user,
+        password: pg.password,
+        database: pg.database,
+        ssl: pg.ssl ? { rejectUnauthorized: false } : undefined,
+    };
+}
+
+type StreamLockHandle = {
+    release: () => Promise<void>;
+};
+
+async function acquireDingTalkStreamLock(params: {
+    config: ReturnType<typeof loadConfig>;
+    clientId: string;
+    log: Logger;
+    instanceId: string;
+}): Promise<StreamLockHandle | null> {
+    const { config, clientId, log, instanceId } = params;
+    const memoryConfig = config.agent.memory;
+    if (memoryConfig.backend !== 'pgsql' && !memoryConfig.pgsql.enabled) {
+        return null;
+    }
+
+    const clientConfig = buildPgClientConfig(memoryConfig);
+    if (!clientConfig) {
+        return null;
+    }
+
+    const lockDigest = createHash('sha256').update(`dingtalk-stream:${clientId}`).digest();
+    const lockKey1 = lockDigest.readInt32BE(0);
+    const lockKey2 = lockDigest.readInt32BE(4);
+    const client = new PgClient(clientConfig);
+
+    try {
+        await client.connect();
+    } catch (error) {
+        log.warn(
+            `[DingTalk] advisory lock skipped: PG connect failed for instance=${instanceId}: ` +
+            `${error instanceof Error ? error.message : String(error)}`
+        );
+        await client.end().catch(() => undefined);
+        return null;
+    }
+
+    const deadline = Date.now() + STREAM_LOCK_WAIT_MS;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+        attempt += 1;
+        try {
+            const result = await client.query<{ locked: boolean }>(
+                'SELECT pg_try_advisory_lock($1, $2) AS locked',
+                [lockKey1, lockKey2]
+            );
+            if (result.rows[0]?.locked) {
+                return {
+                    release: async () => {
+                        try {
+                            await client.query('SELECT pg_advisory_unlock($1, $2)', [lockKey1, lockKey2]);
+                        } catch (error) {
+                            log.warn(
+                                `[DingTalk] advisory lock release failed: instance=${instanceId} ` +
+                                `${error instanceof Error ? error.message : String(error)}`
+                            );
+                        } finally {
+                            await client.end().catch(() => undefined);
+                        }
+                    },
+                };
+            }
+        } catch (error) {
+            log.warn(
+                `[DingTalk] advisory lock query failed: instance=${instanceId} attempt=${attempt} ` +
+                `${error instanceof Error ? error.message : String(error)}`
+            );
+            break;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, STREAM_LOCK_RETRY_MS));
+    }
+
+    await client.end().catch(() => undefined);
+    throw new Error(`DingTalk stream lock held by another instance for more than ${STREAM_LOCK_WAIT_MS}ms`);
+}
+
+function instrumentDingTalkClient(client: DWClient, log: Logger, instanceId: string): void {
+    const rawClient = client as any;
+    let connectInFlight: Promise<void> | null = null;
+    let connectAttempt = 0;
+
+    const attachSocketInstrumentation = (socket: any): void => {
+        if (!socket || socket.__pomelobotInstrumented) {
+            return;
+        }
+        socket.__pomelobotInstrumented = true;
+
+        socket.on('open', () => {
+            client.emit('pomelobot:stream:socket_open');
+        });
+    };
+
+    const waitForReady = (): Promise<void> =>
+        new Promise((resolve) => {
+            if (client.connected && client.registered) {
+                resolve();
+                return;
+            }
+
+            const timer = setTimeout(() => {
+                cleanup();
+                resolve();
+            }, 5000);
+
+            const onRegistered = () => {
+                cleanup();
+                resolve();
+            };
+            const onOpen = () => {
+                setTimeout(() => {
+                    cleanup();
+                    resolve();
+                }, 300);
+            };
+
+            const cleanup = () => {
+                clearTimeout(timer);
+                client.off('pomelobot:stream:registered', onRegistered);
+                client.off('pomelobot:stream:open', onOpen);
+                client.off('pomelobot:stream:socket_open', onOpen);
+            };
+
+            client.on('pomelobot:stream:registered', onRegistered);
+            client.on('pomelobot:stream:open', onOpen);
+            client.on('pomelobot:stream:socket_open', onOpen);
+        });
+
+    const originalConnect = client.connect.bind(client);
+    client.connect = async () => {
+        if (connectInFlight) {
+            return connectInFlight;
+        }
+
+        if (client.connected && client.registered) {
+            return;
+        }
+
+        connectAttempt += 1;
+        const attempt = connectAttempt;
+
+        connectInFlight = originalConnect()
+            .then(() => {
+                attachSocketInstrumentation(rawClient.socket);
+                return waitForReady();
+            })
+            .catch((error) => {
+                log.warn(
+                    `[DingTalk] stream connect failed: instance=${instanceId} attempt=${attempt} ` +
+                    `${error instanceof Error ? error.message : String(error)}`
+                );
+                throw error;
+            })
+            .finally(() => {
+                connectInFlight = null;
+            });
+
+        return connectInFlight;
+    };
+
+    const originalDisconnect = client.disconnect.bind(client);
+    client.disconnect = () => {
+        originalDisconnect();
+    };
+
+    if (typeof rawClient.onSystem === 'function') {
+        const originalOnSystem = rawClient.onSystem.bind(client);
+        rawClient.onSystem = (downstream: { headers?: { topic?: string }; data?: string }) => {
+            const topic = downstream?.headers?.topic || 'unknown';
+            if (topic === 'CONNECTED') {
+                client.emit('pomelobot:stream:open');
+            } else if (topic === 'REGISTERED') {
+                client.emit('pomelobot:stream:registered');
+            }
+            const result = originalOnSystem(downstream);
+            if (topic === 'disconnect') {
+                setTimeout(() => {
+                    try {
+                        rawClient.socket?.terminate?.();
+                    } catch (error) {
+                        log.warn(
+                            `[DingTalk] stream terminate on disconnect failed: instance=${instanceId} ` +
+                            `${error instanceof Error ? error.message : String(error)}`
+                        );
+                    }
+                }, 0);
+            }
+            return result;
+        };
+    }
 }
 
 function isAutoMemorySaveJob(job: CronJob): boolean {
@@ -256,13 +475,25 @@ export async function startDingTalkService(options?: {
 
     // Create DingTalk Stream client
     log.info('[DingTalk] Connecting to DingTalk Stream...');
+    const streamInstanceId = `${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
+    const streamUA = `pomelobot/${streamInstanceId}`;
+    const streamLock = await acquireDingTalkStreamLock({
+        config,
+        clientId: dingtalkConfig.clientId,
+        log,
+        instanceId: streamInstanceId,
+    });
 
     const client = new DWClient({
         clientId: dingtalkConfig.clientId,
         clientSecret: dingtalkConfig.clientSecret,
         debug: dingtalkConfig.debug || false,
-        keepAlive: true,
+        // Rely on Stream protocol ping/disconnect + SDK autoReconnect.
+        // The SDK's ws keepAlive timer is not cleared on socket close, only on disconnect().
+        keepAlive: false,
+        ua: streamUA,
     });
+    instrumentDingTalkClient(client, log, streamInstanceId);
 
     // Message handler context
     const ctx = {
@@ -391,10 +622,12 @@ export async function startDingTalkService(options?: {
         },
         logger: toGatewayLogger(log),
     });
+    let isShuttingDown = false;
     const dingtalkAdapter = createDingTalkChannelAdapter({
         config: dingtalkConfig,
         log,
         client,
+        isShuttingDown: () => isShuttingDown,
     });
     gateway.registerAdapter(dingtalkAdapter);
     await gateway.start();
@@ -407,8 +640,6 @@ export async function startDingTalkService(options?: {
     console.log();
 
     // Handle graceful shutdown
-    let isShuttingDown = false;
-
     const shutdown = async () => {
         if (isShuttingDown) return;
         isShuttingDown = true;
@@ -416,11 +647,26 @@ export async function startDingTalkService(options?: {
         console.log();
         log.info('[DingTalk] Shutting down...');
 
+        try {
+            log.info('[DingTalk] Disconnecting DingTalk Stream before draining...');
+            client.disconnect();
+        } catch (error) {
+            log.warn('[DingTalk] stream disconnect failed:', error instanceof Error ? error.message : String(error));
+        }
+
         if (gateway) {
             try {
                 await gateway.stop();
             } catch (error) {
                 log.warn('[DingTalk] gateway stop failed:', error instanceof Error ? error.message : String(error));
+            }
+        }
+
+        if (streamLock) {
+            try {
+                await streamLock.release();
+            } catch (error) {
+                log.warn('[DingTalk] stream lock release failed:', error instanceof Error ? error.message : String(error));
             }
         }
 
@@ -451,8 +697,6 @@ export async function startDingTalkService(options?: {
             log.warn('[DingTalk] Shutdown memory flush failed:', error instanceof Error ? error.message : String(error));
         }
 
-        // Note: dingtalk-stream doesn't have a disconnect method,
-        // the process will exit and close the connection
         try {
             await closeSessionResources(log);
         } catch (error) {
