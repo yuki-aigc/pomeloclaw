@@ -69,12 +69,25 @@ CLI 支持：
 
 1. 计算 `tokensBefore`
 2. 若未超预算，直接返回
-3. 拆分 `system` 与 `conversation` 消息
+3. 拆分 `system`、已有 compaction 摘要、`conversation` 消息
 4. 预算分配
 - `availableForConversation = maxTokens - systemTokens - 500`
 - 其中最近消息目标保留约 `60%` 会话预算
-5. 旧消息进入 LLM 摘要（`generateSummary`）
+5. 将“已有摘要 + 本轮需压缩旧消息”一起交给 LLM，生成新的统一摘要（`generateSummary`）
 6. 生成新历史：`system + [对话历史摘要] + recent`
+
+当前摘要会强制输出固定结构，重点保留“进行中工作态”：
+- `## 当前任务`
+- `## 最新用户请求`
+- `## 已完成进展`
+- `## 进行中工作`
+- `## 待办与后续承诺`
+- `## 关键决策与约束`
+- `## 未解决问题与风险`
+
+注意：
+- 若会话已经压缩过，旧的 `[对话历史摘要]` 不会继续堆叠保留。
+- 新一轮 compaction 会把旧摘要与旧消息合并成**一条新的统一摘要**，避免多次压缩后出现多条历史摘要串联。
 
 输出：
 - `messages`

@@ -2,20 +2,72 @@ import type { BaseMessage } from '@langchain/core/messages';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { countMessageTokensWithModel, countTotalTokensWithModel, estimateMessageTokens } from './compaction.js';
+import { WORKING_SUMMARY_REQUIREMENTS, WORKING_SUMMARY_SCHEMA } from './summary-schema.js';
+
+const SUMMARY_MESSAGE_PREFIX = '[对话历史摘要]';
+const LEGACY_SUMMARY_MESSAGE_PREFIX = '[Previous conversation summary]';
 
 const SUMMARY_SYSTEM_PROMPT = `你是一个对话摘要助手。请将以下对话历史压缩成简洁的摘要，保留：
-1. 关键决策和结论
-2. 重要的待办事项
-3. 用户的偏好和约束
-4. 未解决的问题
+1. 当前正在推进的主要任务，以及任务当前所处阶段
+2. 最新用户请求、预期产出和当前回答需要接续的方向
+3. 已完成进展，以及批次/分页/文件/节点/工单等可执行进度
+4. 已承诺但尚未完成的后续动作、待办事项
+5. 关键决策、约束、用户偏好、边界条件
+6. 未解决的问题、阻塞、风险和需要回访的点
+7. 关键事实细节：文件路径、命令、日期、阈值、ID、名称等
 
-摘要应该简洁但信息完整，便于后续对话继续。使用中文回复。`;
+输出要求：
+- ${WORKING_SUMMARY_REQUIREMENTS.join('\n- ')}
 
-const SUMMARY_USER_TEMPLATE = `请总结以下对话历史：
+固定结构：
+${WORKING_SUMMARY_SCHEMA}`;
 
+const SUMMARY_USER_TEMPLATE = `请合并已有摘要与本轮需要压缩的旧消息，生成一份新的统一摘要。
+
+【已有摘要】
+{existingSummary}
+
+【本轮需要压缩的旧消息】
 {messages}
 
-请生成简洁的摘要：`;
+请输出新的统一摘要：`;
+
+function getMessageText(message: BaseMessage): string {
+    return typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+}
+
+function isSummaryMessage(message: BaseMessage): boolean {
+    if (message._getType() !== 'system') {
+        return false;
+    }
+    const content = getMessageText(message).trim();
+    return content.startsWith(SUMMARY_MESSAGE_PREFIX) || content.startsWith(LEGACY_SUMMARY_MESSAGE_PREFIX);
+}
+
+function stripSummaryPrefix(content: string): string {
+    const normalized = content.trim();
+    if (normalized.startsWith(SUMMARY_MESSAGE_PREFIX)) {
+        return normalized.slice(SUMMARY_MESSAGE_PREFIX.length).trimStart();
+    }
+    if (normalized.startsWith(LEGACY_SUMMARY_MESSAGE_PREFIX)) {
+        return normalized.slice(LEGACY_SUMMARY_MESSAGE_PREFIX.length).trimStart();
+    }
+    return normalized;
+}
+
+function formatExistingSummary(messages: BaseMessage[]): string {
+    const summaries = messages
+        .filter(isSummaryMessage)
+        .map((message) => stripSummaryPrefix(getMessageText(message)))
+        .map((text) => text.trim())
+        .filter(Boolean);
+
+    if (summaries.length === 0) {
+        return '无';
+    }
+
+    return summaries.join('\n\n---\n\n');
+}
 
 /**
  * Generate a summary of messages using LLM
@@ -24,8 +76,10 @@ export async function generateSummary(
     messages: BaseMessage[],
     model: BaseChatModel,
     customInstructions?: string,
+    existingSummary?: string,
 ): Promise<string> {
-    if (messages.length === 0) {
+    const normalizedExistingSummary = (existingSummary ?? '').trim();
+    if (messages.length === 0 && !normalizedExistingSummary) {
         return '无历史对话。';
     }
 
@@ -34,7 +88,7 @@ export async function generateSummary(
         const role = msg._getType() === 'human' ? '用户' :
             msg._getType() === 'ai' ? '助手' :
                 msg._getType() === 'system' ? '系统' : '其他';
-        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        const content = getMessageText(msg);
         return `[${role}]: ${content}`;
     }).join('\n\n');
 
@@ -42,7 +96,9 @@ export async function generateSummary(
         ? `${SUMMARY_SYSTEM_PROMPT}\n\n额外要求：${customInstructions}`
         : SUMMARY_SYSTEM_PROMPT;
 
-    const userPrompt = SUMMARY_USER_TEMPLATE.replace('{messages}', formattedMessages);
+    const userPrompt = SUMMARY_USER_TEMPLATE
+        .replace('{existingSummary}', normalizedExistingSummary || '无')
+        .replace('{messages}', formattedMessages || '无');
 
     try {
         const response = await model.invoke([
@@ -57,6 +113,9 @@ export async function generateSummary(
         return summary.trim();
     } catch (error) {
         console.error('Failed to generate summary:', error);
+        if (normalizedExistingSummary) {
+            return normalizedExistingSummary;
+        }
         // Fallback: return a simple description
         const totalTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
         return `[历史对话包含 ${messages.length} 条消息，约 ${totalTokens} tokens，摘要生成失败]`;
@@ -89,8 +148,10 @@ export async function compactMessages(
     }
 
     // Separate system messages and conversational messages
-    const systemMessages = messages.filter(m => m._getType() === 'system');
+    const summaryMessages = messages.filter(isSummaryMessage);
+    const systemMessages = messages.filter(m => m._getType() === 'system' && !isSummaryMessage(m));
     const conversationMessages = messages.filter(m => m._getType() !== 'system');
+    const existingSummary = formatExistingSummary(summaryMessages);
 
     // Calculate how many tokens we can use for conversation
     const systemTokens = await countTotalTokensWithModel(systemMessages, model);
@@ -118,12 +179,12 @@ export async function compactMessages(
 
     // Generate summary if there's something to summarize
     let summary = '';
-    if (toSummarize.length > 0) {
-        summary = await generateSummary(toSummarize, model, customInstructions);
+    if (toSummarize.length > 0 || existingSummary !== '无') {
+        summary = await generateSummary(toSummarize, model, customInstructions, existingSummary);
     }
 
     // Build new message list
-    const summaryMessage = summary ? new SystemMessage(`[对话历史摘要]\n${summary}`) : null;
+    const summaryMessage = summary ? new SystemMessage(`${SUMMARY_MESSAGE_PREFIX}\n${summary}`) : null;
     const newMessages = [
         ...systemMessages,
         ...(summaryMessage ? [summaryMessage] : []),

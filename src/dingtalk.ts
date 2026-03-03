@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { Client as PgClient } from 'pg';
 import type { ExecApprovalRequest } from './agent.js';
+import { WORKING_SUMMARY_REQUIREMENTS, WORKING_SUMMARY_SCHEMA } from './compaction/summary-schema.js';
 import { loadConfig, type AgentMemoryConfig } from './config.js';
 import { ConversationRuntime } from './conversation/runtime.js';
 import {
@@ -50,13 +51,17 @@ function buildAutoMemorySaveJobDescription(): string {
     return `自动创建，请勿删除。${AUTO_MEMORY_SAVE_JOB_MARKER}`;
 }
 
-function buildAutoMemorySaveJobPrompt(): string {
+export function buildAutoMemorySaveJobPrompt(): string {
     return [
         '请执行每日记忆归档任务。',
         '要求：',
         '1. 回顾最近24小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。',
-        '2. 调用 memory_save，target 必须是 daily；内容需要结构化且可复盘。',
-        '3. 完成后在回复末尾明确输出: memory_saved。',
+        '2. 输出内容必须使用以下固定结构；没有信息时写“无”：',
+        WORKING_SUMMARY_SCHEMA,
+        '3. 输出内容必须满足以下要求：',
+        ...WORKING_SUMMARY_REQUIREMENTS.map((item, index) => `   ${index + 1}) ${item}`),
+        '4. 调用 memory_save，target 必须是 daily；content 直接填写上面的结构化摘要正文，不要包“对话摘要:”前缀。',
+        '5. 完成后在回复末尾明确输出: memory_saved。',
         '注意：若你没有调用 memory_save 就结束任务，视为失败。',
     ].join('\n');
 }

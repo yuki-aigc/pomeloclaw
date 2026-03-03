@@ -1,6 +1,7 @@
 import type { CompactionConfig } from '../config.js';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { countTokensWithModel, getEffectiveAutoCompactThreshold } from '../compaction/index.js';
+import { WORKING_SUMMARY_REQUIREMENTS, WORKING_SUMMARY_SCHEMA } from '../compaction/summary-schema.js';
 
 const MEMORY_FLUSH_TRIGGER_RATIO = 0.9;
 const MEMORY_FLUSH_HYSTERESIS_RATIO = 0.85;
@@ -94,9 +95,9 @@ export const MEMORY_FLUSH_SYSTEM_PROMPT = `
 
 1. 立即使用 memory_save 工具保存本次对话的关键信息
 2. 必须保存的内容包括：
-   - 用户在本次对话中问过的主要问题（摘要形式）
-   - 用户表达的偏好或重要信息
-   - 重要的任务结论或决策
+   - 当前任务、最新用户请求、已完成进展、进行中工作
+   - 待办与后续承诺、关键决策与约束、未解决问题与风险
+   - 用户表达的偏好、重要事实、命令、路径、日期、阈值、ID 等细节
 3. 保存完成后回复 "NO_REPLY"
 
 重要：你必须调用 memory_save 工具，不能只回复 NO_REPLY！
@@ -107,11 +108,17 @@ export const MEMORY_FLUSH_USER_PROMPT = `
 
 请立即执行以下步骤：
 
-STEP 1: 回顾当前对话，总结用户问过的主要问题和关键信息
-STEP 2: 调用 memory_save 工具，将对话摘要保存到 daily 记忆：
-   - content: "对话摘要: [用户问题1], [用户问题2], ..., [关键信息]"
+STEP 1: 回顾当前对话，生成一份“进行中工作态摘要”。
+STEP 2: 摘要必须使用以下固定结构；没有信息时写“无”：
+${WORKING_SUMMARY_SCHEMA}
+
+STEP 3: 摘要必须满足以下要求：
+${WORKING_SUMMARY_REQUIREMENTS.map((item) => `- ${item}`).join('\n')}
+
+STEP 4: 调用 memory_save 工具，将该结构化摘要保存到 daily 记忆：
+   - content: 直接填写上面的结构化摘要正文，不要再包一层“对话摘要:”前缀
    - target: "daily"
-STEP 3: 只有在 STEP 2 完成后，才回复 "NO_REPLY"
+STEP 5: 只有在 STEP 4 完成后，才回复 "NO_REPLY"
 
 如果你不调用 memory_save 就直接回复 NO_REPLY，这是错误的行为！
 `;
