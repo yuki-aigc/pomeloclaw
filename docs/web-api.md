@@ -64,6 +64,11 @@
 - 同一个用户可在多个前端/标签页恢复同一个 `session_id`
 - 不同用户不能共享同一个 `session_id`
 
+补充：
+
+- `session_events` 会按 `session_id` 记录会话热日志，便于“上次/昨天/刚才”类回溯
+- `memory_save` / `daily` / `long-term` 默认落到共享 `main`，适合团队共用记忆；如需按用户隔离，可把 `web_direct_scope` 改成 `direct`
+
 ## 3. HTTP API
 
 ### 3.1 健康检查
@@ -135,7 +140,21 @@ Content-Type: application/json
 - 该接口支持 `CORS`
 - 如果你不想单独走 HTTP，也可以直接在 WebSocket `hello` 时让服务端生成 `session_id`
 
-### 3.3 附件下载
+### 3.3 记忆持久化行为
+
+Web 渠道当前默认会做三层持久化：
+
+- 每条 `user/assistant` 消息写入 `workspace/memory/scopes/<scope>/transcripts/YYYY-MM-DD.md`
+- 每条 `user/assistant` 消息尽量写入 PG `session_events`
+- 当单会话 token 接近阈值时，后台触发 memory flush，把“进行中工作态摘要”写入 `daily` 记忆，并轮换 agent thread
+
+这意味着：
+
+- 原始会话可通过 transcript / `session_events` 回溯
+- 关键信息会通过 `memory_save` 进入长期检索链路
+- 多用户 Web API 现在默认共享 `main` scope，适合团队共享记忆
+
+### 3.4 附件下载
 
 服务端会在回复事件里返回附件列表：
 

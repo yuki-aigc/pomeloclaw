@@ -97,7 +97,7 @@ CLI 支持：
 
 ### 3.3 DingTalk 特有行为
 
-- compaction 完成后，摘要会写入 `dingtalk_session_events`（role=`summary`）。
+- compaction 完成后，摘要会写入 `session_events`（role=`summary`）。
 - 每轮结束 session 状态会 UPSERT 到 `dingtalk_sessions`。
 - 进程收到 `SIGINT/SIGTERM` 时会尝试关机前 flush 活跃会话，降低重启丢失概率。
 
@@ -132,7 +132,7 @@ CLI 支持：
 
 可以，但要区分两种来源：
 - 知识型记忆：`memory_search`（chunks + session events）+ `memory_get`（按路径精读）
-- 会话态恢复：`dingtalk_sessions` / `dingtalk_session_events`
+- 会话态恢复：`dingtalk_sessions` / `session_events`
 
 ---
 

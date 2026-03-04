@@ -26,6 +26,8 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const TEMPORAL_RECENT_DAYS = 7;
 const SESSION_VECTOR_TEXT_MAX_CHARS = 1600;
 const SESSION_EVENTS_TTL_DELETE_BATCH = 2000;
+const SESSION_EVENTS_TABLE = 'session_events';
+const LEGACY_DINGTALK_SESSION_EVENTS_TABLE = 'dingtalk_session_events';
 
 type MemorySourceType = 'daily' | 'long-term' | 'transcript' | 'session' | 'heartbeat';
 
@@ -74,6 +76,16 @@ export interface MemoryGetResult {
     lineCount: number;
     text: string;
     truncated: boolean;
+}
+
+export interface MemorySessionEventInput {
+    scope: MemoryScope;
+    conversationId: string;
+    role: 'user' | 'assistant' | 'summary';
+    content: string;
+    channel?: string;
+    createdAt?: number;
+    metadata?: Record<string, unknown>;
 }
 
 interface SearchRow {
@@ -433,11 +445,13 @@ export class MemoryRuntime {
     private readonly workspacePath: string;
     private readonly config: Config;
     private readonly memoryConfig: AgentMemoryConfig;
+    private readonly schemaName: string;
     private readonly schemaSql: string;
     private readonly filesTable: string;
     private readonly chunksTable: string;
     private readonly embeddingCacheTable: string;
     private readonly sessionEventsTable: string;
+    private readonly legacySessionEventsTable: string;
     private readonly embeddingProviders: AgentMemoryEmbeddingProviderConfig[];
     private readonly indexerLayer: MemoryIndexerLayer;
     private readonly retrieverLayer: MemoryRetrieverLayer;
@@ -465,12 +479,13 @@ export class MemoryRuntime {
         this.workspacePath = workspacePath;
         this.config = config;
         this.memoryConfig = config.agent.memory;
-        const schemaName = this.memoryConfig.pgsql.schema || 'pomelobot_memory';
-        this.schemaSql = quoteIdentifier(schemaName);
+        this.schemaName = this.memoryConfig.pgsql.schema || 'pomelobot_memory';
+        this.schemaSql = quoteIdentifier(this.schemaName);
         this.filesTable = `${this.schemaSql}.memory_files`;
         this.chunksTable = `${this.schemaSql}.memory_chunks`;
         this.embeddingCacheTable = `${this.schemaSql}.embedding_cache`;
-        this.sessionEventsTable = `${this.schemaSql}.dingtalk_session_events`;
+        this.sessionEventsTable = `${this.schemaSql}.${quoteIdentifier(SESSION_EVENTS_TABLE)}`;
+        this.legacySessionEventsTable = `${this.schemaSql}.${quoteIdentifier(LEGACY_DINGTALK_SESSION_EVENTS_TABLE)}`;
         this.embeddingProviders = resolveEmbeddingProviders(config);
         this.indexerLayer = new MemoryIndexerLayer({
             memoryConfig: this.memoryConfig,
@@ -655,6 +670,7 @@ export class MemoryRuntime {
                 id BIGSERIAL PRIMARY KEY,
                 session_key TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
+                channel TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 metadata_json JSONB,
@@ -664,30 +680,35 @@ export class MemoryRuntime {
         );
         await this.pool.query(
             `ALTER TABLE ${this.sessionEventsTable}
+             ADD COLUMN IF NOT EXISTS channel TEXT`
+        );
+        await this.pool.query(
+            `ALTER TABLE ${this.sessionEventsTable}
              ADD COLUMN IF NOT EXISTS metadata_json JSONB`
         );
         await this.pool.query(
             `ALTER TABLE ${this.sessionEventsTable}
              ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
         );
+        await this.migrateLegacySessionEventsTable();
 
         await this.pool.query(`CREATE INDEX IF NOT EXISTS memory_chunks_scope_idx ON ${this.chunksTable} (scope_key)`);
         await this.pool.query(`CREATE INDEX IF NOT EXISTS memory_chunks_fts_idx ON ${this.chunksTable} USING GIN (search_vector)`);
         try {
             await this.pool.query(
-                `CREATE INDEX IF NOT EXISTS dingtalk_session_events_session_idx
+                `CREATE INDEX IF NOT EXISTS session_events_session_idx
                  ON ${this.sessionEventsTable} (session_key, created_at DESC)`
             );
             await this.pool.query(
-                `CREATE INDEX IF NOT EXISTS dingtalk_session_events_conversation_idx
+                `CREATE INDEX IF NOT EXISTS session_events_conversation_idx
                  ON ${this.sessionEventsTable} (conversation_id, created_at DESC)`
             );
             await this.pool.query(
-                `CREATE INDEX IF NOT EXISTS dingtalk_session_events_created_at_idx
+                `CREATE INDEX IF NOT EXISTS session_events_created_at_idx
                  ON ${this.sessionEventsTable} (created_at DESC)`
             );
             await this.pool.query(
-                `CREATE INDEX IF NOT EXISTS dingtalk_session_events_fts_idx
+                `CREATE INDEX IF NOT EXISTS session_events_fts_idx
                  ON ${this.sessionEventsTable}
                  USING GIN (to_tsvector('simple', coalesce(content, '')))`
             );
@@ -759,7 +780,7 @@ export class MemoryRuntime {
                  ON ${this.chunksTable} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`
             );
             await this.pool.query(
-                `CREATE INDEX IF NOT EXISTS dingtalk_session_events_embedding_ivf_idx
+                `CREATE INDEX IF NOT EXISTS session_events_embedding_ivf_idx
                  ON ${this.sessionEventsTable} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)`
             );
             this.vectorAvailable = true;
@@ -919,6 +940,73 @@ export class MemoryRuntime {
         });
 
         return this.sessionEventTtlCleanupInFlight;
+    }
+
+    private async migrateLegacySessionEventsTable(): Promise<void> {
+        if (!this.pool || this.legacySessionEventsTable === this.sessionEventsTable) {
+            return;
+        }
+
+        const legacyExists = await this.pool.query<{ exists: boolean }>(
+            `SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = $1
+                  AND table_name = $2
+            ) AS exists`,
+            [this.schemaName, LEGACY_DINGTALK_SESSION_EVENTS_TABLE]
+        );
+        if (!legacyExists.rows[0]?.exists) {
+            return;
+        }
+
+        await this.pool.query(
+            `ALTER TABLE ${this.legacySessionEventsTable}
+             ADD COLUMN IF NOT EXISTS channel TEXT`
+        ).catch(() => undefined);
+
+        await this.pool.query(
+            `INSERT INTO ${this.sessionEventsTable} (
+                session_key,
+                conversation_id,
+                channel,
+                role,
+                content,
+                metadata_json,
+                created_at,
+                inserted_at
+            )
+            SELECT
+                legacy.session_key,
+                legacy.conversation_id,
+                COALESCE(legacy.channel, 'dingtalk'),
+                legacy.role,
+                legacy.content,
+                legacy.metadata_json,
+                legacy.created_at,
+                COALESCE(legacy.inserted_at, NOW())
+            FROM ${this.legacySessionEventsTable} AS legacy
+            LEFT JOIN ${this.sessionEventsTable} AS current
+              ON current.session_key = legacy.session_key
+             AND current.conversation_id = legacy.conversation_id
+             AND current.role = legacy.role
+             AND current.content = legacy.content
+             AND current.created_at = legacy.created_at
+            WHERE current.id IS NULL`
+        ).catch((error) => {
+            console.warn('[Memory] legacy session event migration skipped:', error instanceof Error ? error.message : String(error));
+        });
+    }
+
+    private handleSessionEventStorageError(error: unknown): void {
+        const code = typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code?: unknown }).code ?? '')
+            : '';
+        if (code === '42P01' || code === '42703') {
+            this.sessionEventsAvailable = false;
+            this.sessionEventVectorAvailable = false;
+            this.stopBackgroundWorkers();
+        }
     }
 
     private async runIncrementalSync(options?: { force?: boolean; onlyPaths?: string[] }): Promise<void> {
@@ -1986,6 +2074,44 @@ export class MemoryRuntime {
 
     async saveHeartbeat(content: string, scope: MemoryScope, category?: string): Promise<MemorySaveResult> {
         return this.storeLayer.saveHeartbeat(content, scope, category);
+    }
+
+    async appendSessionEvent(params: MemorySessionEventInput): Promise<boolean> {
+        if (!this.pool || !this.canUsePg() || !this.sessionEventsAvailable) {
+            return false;
+        }
+
+        const text = params.content.trim();
+        if (!text) {
+            return false;
+        }
+
+        try {
+            await this.pool.query(
+                `INSERT INTO ${this.sessionEventsTable} (
+                    session_key,
+                    conversation_id,
+                    channel,
+                    role,
+                    content,
+                    metadata_json,
+                    created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+                [
+                    params.scope.key,
+                    params.conversationId,
+                    params.channel || null,
+                    params.role,
+                    text,
+                    params.metadata ? JSON.stringify(params.metadata) : null,
+                    Math.max(0, Math.floor(params.createdAt ?? Date.now())),
+                ]
+            );
+            return true;
+        } catch (error) {
+            this.handleSessionEventStorageError(error);
+            throw error;
+        }
     }
 
     async appendTranscript(scope: MemoryScope, role: 'user' | 'assistant', content: string): Promise<void> {

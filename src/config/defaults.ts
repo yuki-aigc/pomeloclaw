@@ -90,7 +90,8 @@ export const DEFAULT_CONFIG: Config = {
             },
             session_isolation: {
                 enabled: true,
-                direct_scope: 'main' as const,
+                direct_scope: 'direct' as const,
+                web_direct_scope: 'main' as const,
                 group_scope_prefix: 'group_',
             },
             transcript: {

@@ -23,6 +23,11 @@ test('validateConfig accepts normalized valid config', () => {
     assert.equal(parsed.llm.models[0].alias, config.llm.models[0].alias);
 });
 
+test('default config keeps non-web direct isolated but web direct shared', () => {
+    assert.equal(DEFAULT_CONFIG.agent.memory.session_isolation.direct_scope, 'direct');
+    assert.equal(DEFAULT_CONFIG.agent.memory.session_isolation.web_direct_scope, 'main');
+});
+
 test('validateConfig reports path for invalid provider', () => {
     const config = buildValidConfig() as unknown as {
         llm: {

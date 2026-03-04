@@ -8,7 +8,8 @@ import type { Logger, SessionState } from './types.js';
 
 const DEFAULT_SCHEMA = 'pomelobot_memory';
 const SESSION_TABLE = 'dingtalk_sessions';
-const SESSION_EVENT_TABLE = 'dingtalk_session_events';
+const SESSION_EVENT_TABLE = 'session_events';
+const LEGACY_SESSION_EVENT_TABLE = 'dingtalk_session_events';
 
 interface SessionRow {
     thread_id: string;
@@ -155,17 +156,20 @@ export function createSessionThreadId(scopeKey: string): string {
 }
 
 export class DingTalkSessionStore {
+    private readonly schemaName: string;
     private readonly schemaSql: string;
     private readonly tableSql: string;
     private readonly eventTableSql: string;
+    private readonly legacyEventTableSql: string;
     private pool: Pool | null = null;
     private ready = false;
 
     constructor(private readonly config: Config, private readonly log: Logger) {
-        const schemaName = config.agent.memory.pgsql.schema || DEFAULT_SCHEMA;
-        this.schemaSql = quoteIdentifier(schemaName);
+        this.schemaName = config.agent.memory.pgsql.schema || DEFAULT_SCHEMA;
+        this.schemaSql = quoteIdentifier(this.schemaName);
         this.tableSql = `${this.schemaSql}.${quoteIdentifier(SESSION_TABLE)}`;
         this.eventTableSql = `${this.schemaSql}.${quoteIdentifier(SESSION_EVENT_TABLE)}`;
+        this.legacyEventTableSql = `${this.schemaSql}.${quoteIdentifier(LEGACY_SESSION_EVENT_TABLE)}`;
     }
 
     async initialize(): Promise<boolean> {
@@ -286,6 +290,7 @@ export class DingTalkSessionStore {
         conversationId: string;
         role: 'user' | 'assistant' | 'summary';
         content: string;
+        channel?: string;
         createdAt?: number;
         metadata?: Record<string, unknown>;
     }): Promise<void> {
@@ -302,14 +307,16 @@ export class DingTalkSessionStore {
             `INSERT INTO ${this.eventTableSql} (
                 session_key,
                 conversation_id,
+                channel,
                 role,
                 content,
                 metadata_json,
                 created_at
-            ) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
             [
                 params.sessionKey,
                 params.conversationId,
+                params.channel || 'dingtalk',
                 params.role,
                 text,
                 params.metadata ? JSON.stringify(params.metadata) : null,
@@ -383,6 +390,7 @@ export class DingTalkSessionStore {
                 id BIGSERIAL PRIMARY KEY,
                 session_key TEXT NOT NULL,
                 conversation_id TEXT NOT NULL,
+                channel TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 metadata_json JSONB,
@@ -391,15 +399,28 @@ export class DingTalkSessionStore {
             )`
         );
         await this.pool.query(
-            `CREATE INDEX IF NOT EXISTS dingtalk_session_events_session_idx
+            `ALTER TABLE ${this.eventTableSql}
+             ADD COLUMN IF NOT EXISTS channel TEXT`
+        );
+        await this.pool.query(
+            `ALTER TABLE ${this.eventTableSql}
+             ADD COLUMN IF NOT EXISTS metadata_json JSONB`
+        );
+        await this.pool.query(
+            `ALTER TABLE ${this.eventTableSql}
+             ADD COLUMN IF NOT EXISTS inserted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+        );
+        await this.migrateLegacySessionEventsTable();
+        await this.pool.query(
+            `CREATE INDEX IF NOT EXISTS session_events_session_idx
              ON ${this.eventTableSql} (session_key, created_at DESC)`
         );
         await this.pool.query(
-            `CREATE INDEX IF NOT EXISTS dingtalk_session_events_conversation_idx
+            `CREATE INDEX IF NOT EXISTS session_events_conversation_idx
              ON ${this.eventTableSql} (conversation_id, created_at DESC)`
         );
         await this.pool.query(
-            `CREATE INDEX IF NOT EXISTS dingtalk_session_events_fts_idx
+            `CREATE INDEX IF NOT EXISTS session_events_fts_idx
              ON ${this.eventTableSql}
              USING GIN (to_tsvector('simple', coalesce(content, '')))`
         );
@@ -411,6 +432,60 @@ export class DingTalkSessionStore {
         await this.pool.query(
             `CREATE INDEX IF NOT EXISTS dingtalk_sessions_updated_idx
              ON ${this.tableSql} (last_updated DESC)`
+        );
+    }
+
+    private async migrateLegacySessionEventsTable(): Promise<void> {
+        if (!this.pool || this.legacyEventTableSql === this.eventTableSql) {
+            return;
+        }
+
+        const legacyExists = await this.pool.query<{ exists: boolean }>(
+            `SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = $1
+                  AND table_name = $2
+            ) AS exists`,
+            [this.schemaName, LEGACY_SESSION_EVENT_TABLE]
+        );
+        if (!legacyExists.rows[0]?.exists) {
+            return;
+        }
+
+        await this.pool.query(
+            `ALTER TABLE ${this.legacyEventTableSql}
+             ADD COLUMN IF NOT EXISTS channel TEXT`
+        ).catch(() => undefined);
+
+        await this.pool.query(
+            `INSERT INTO ${this.eventTableSql} (
+                session_key,
+                conversation_id,
+                channel,
+                role,
+                content,
+                metadata_json,
+                created_at,
+                inserted_at
+            )
+            SELECT
+                legacy.session_key,
+                legacy.conversation_id,
+                COALESCE(legacy.channel, 'dingtalk'),
+                legacy.role,
+                legacy.content,
+                legacy.metadata_json,
+                legacy.created_at,
+                COALESCE(legacy.inserted_at, NOW())
+            FROM ${this.legacyEventTableSql} AS legacy
+            LEFT JOIN ${this.eventTableSql} AS current
+              ON current.session_key = legacy.session_key
+             AND current.conversation_id = legacy.conversation_id
+             AND current.role = legacy.role
+             AND current.content = legacy.content
+             AND current.created_at = legacy.created_at
+            WHERE current.id IS NULL`
         );
     }
 }

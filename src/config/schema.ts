@@ -117,6 +117,7 @@ const configSchemaInternal = z.object({
             session_isolation: z.object({
                 enabled: z.boolean(),
                 direct_scope: z.enum(['main', 'direct']),
+                web_direct_scope: z.enum(['main', 'direct']),
                 group_scope_prefix: z.string(),
             }),
             transcript: z.object({

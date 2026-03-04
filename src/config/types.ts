@@ -89,6 +89,7 @@ export interface AgentMemoryEmbeddingConfig {
 export interface AgentMemorySessionIsolationConfig {
     enabled: boolean;
     direct_scope: 'main' | 'direct';
+    web_direct_scope: 'main' | 'direct';
     group_scope_prefix: string;
 }
 

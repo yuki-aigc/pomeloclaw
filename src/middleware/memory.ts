@@ -136,6 +136,59 @@ export function createMemoryTools(workspacePath: string, config: Config) {
     return [memorySave, memorySearch, memoryGet, heartbeatSave];
 }
 
+export type SessionEventRole = 'user' | 'assistant' | 'summary';
+
+export async function recordSessionEvent(
+    workspacePath: string,
+    config: Config,
+    params: {
+        role: SessionEventRole;
+        content: string;
+        conversationId: string;
+        channel?: string;
+        createdAt?: number;
+        metadata?: Record<string, unknown>;
+        fallbackToTranscript?: boolean;
+    },
+): Promise<'pg' | 'transcript' | 'skipped'> {
+    const text = params.content.trim();
+    if (!text) {
+        return 'skipped';
+    }
+
+    const scope = resolveMemoryScope(config.agent.memory.session_isolation);
+    const runtime = await getMemoryRuntime(workspacePath, config);
+
+    try {
+        const persisted = await runtime.appendSessionEvent({
+            scope,
+            conversationId: params.conversationId,
+            role: params.role,
+            content: text,
+            channel: params.channel,
+            createdAt: params.createdAt,
+            metadata: params.metadata,
+        });
+        if (persisted) {
+            return 'pg';
+        }
+    } catch {
+        // fall through to transcript fallback when enabled
+    }
+
+    if (params.fallbackToTranscript === false) {
+        return 'skipped';
+    }
+
+    if (params.role === 'summary') {
+        await runtime.appendTranscript(scope, 'assistant', `[压缩摘要] ${text}`);
+        return 'transcript';
+    }
+
+    await runtime.appendTranscript(scope, params.role === 'assistant' ? 'assistant' : 'user', text);
+    return 'transcript';
+}
+
 export async function recordSessionTranscript(
     workspacePath: string,
     config: Config,

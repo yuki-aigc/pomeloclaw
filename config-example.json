@@ -79,8 +79,10 @@
                 ]
             },
             "session_isolation": {
+                "_comment": "direct_scope controls direct chats for non-Web channels such as DingTalk/iOS; web_direct_scope controls direct Web chats. Use main for shared memory, direct for per-user isolation.",
                 "enabled": true,
-                "direct_scope": "main",
+                "direct_scope": "direct",
+                "web_direct_scope": "main",
                 "group_scope_prefix": "group_"
             },
             "transcript": {

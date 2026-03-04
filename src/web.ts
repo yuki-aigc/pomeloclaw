@@ -1,10 +1,24 @@
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createAgent } from './agent.js';
 import { loadConfig } from './config.js';
+import { createChatModel } from './llm.js';
 import { createWebChannelAdapter, type WebLogger, type WebChannelAdapter } from './channels/web/index.js';
 import { GatewayService } from './channels/gateway/index.js';
 import { buildPromptBootstrapMessage } from './prompt/bootstrap.js';
+import {
+    buildMemoryFlushPrompt,
+    createMemoryFlushState,
+    isNoReplyResponse,
+    markFlushCompleted,
+    recordSessionEvent,
+    recordSessionTranscript,
+    shouldTriggerMemoryFlush,
+    updateTokenCountWithModel,
+    type MemoryFlushState,
+} from './middleware/index.js';
 import { resolveMemoryScope } from './middleware/memory-scope.js';
 import { consumeQueuedWebReplyFiles } from './channels/web/context.js';
 import {
@@ -26,6 +40,23 @@ import type { RuntimeLogWriter } from './log/runtime.js';
 
 const conversationQueue = new Map<string, Promise<void>>();
 
+interface WebConversationRuntimeState {
+    threadId: string;
+    flushState: MemoryFlushState;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    });
+}
+
 function enqueueConversationTask(
     conversationId: string,
     task: () => Promise<void>,
@@ -38,6 +69,169 @@ function enqueueConversationTask(
     });
     conversationQueue.set(conversationId, next);
     return next;
+}
+
+function createWebThreadId(conversationId: string): string {
+    return `web-${conversationId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
+}
+
+function getOrCreateConversationState(
+    conversationStates: Map<string, WebConversationRuntimeState>,
+    conversationId: string,
+): WebConversationRuntimeState {
+    const existing = conversationStates.get(conversationId);
+    if (existing) {
+        return existing;
+    }
+
+    const created: WebConversationRuntimeState = {
+        threadId: createWebThreadId(conversationId),
+        flushState: createMemoryFlushState(),
+    };
+    conversationStates.set(conversationId, created);
+    return created;
+}
+
+async function persistWebTurn(params: {
+    workspacePath: string;
+    config: ReturnType<typeof loadConfig>;
+    log: WebLogger;
+    conversationId: string;
+    role: 'user' | 'assistant';
+    content: string;
+    messageId: string;
+    senderId: string;
+    senderName: string;
+    metadata?: Record<string, unknown>;
+}): Promise<void> {
+    const text = params.content.trim();
+    if (!text) {
+        return;
+    }
+
+    await recordSessionTranscript(params.workspacePath, params.config, params.role, text).catch((error) => {
+        params.log.debug(`[Web] Transcript(${params.role}) write skipped:`, String(error));
+    });
+
+    await recordSessionEvent(params.workspacePath, params.config, {
+        role: params.role,
+        content: text,
+        conversationId: params.conversationId,
+        channel: 'web',
+        metadata: {
+            messageId: params.messageId,
+            senderId: params.senderId,
+            senderName: params.senderName,
+            ...(params.metadata || {}),
+        },
+        fallbackToTranscript: false,
+    }).catch((error) => {
+        params.log.debug(`[Web] Session event(${params.role}) write skipped:`, String(error));
+    });
+}
+
+async function executeWebMemoryFlush(params: {
+    agent: Awaited<ReturnType<typeof createAgent>>['agent'];
+    config: ReturnType<typeof loadConfig>;
+    conversationId: string;
+    state: WebConversationRuntimeState;
+    log: WebLogger;
+}): Promise<boolean> {
+    try {
+        const result = await params.agent.invoke(
+            {
+                messages: [{ role: 'user', content: buildMemoryFlushPrompt() }],
+            },
+            {
+                configurable: { thread_id: params.state.threadId },
+                recursionLimit: params.config.agent.recursion_limit,
+                version: 'v2',
+            },
+        );
+        const messages = Array.isArray(result.messages) ? result.messages : [];
+        const lastMessage = messages[messages.length - 1];
+        const content = typeof lastMessage?.content === 'string' ? lastMessage.content.trim() : '';
+        if (content && !isNoReplyResponse(content)) {
+            params.log.debug(`[Web] Memory flush returned visible output (${params.conversationId}): ${content.slice(0, 120)}`);
+        }
+
+        params.state.flushState = markFlushCompleted(params.state.flushState);
+        params.state.threadId = createWebThreadId(params.conversationId);
+        params.log.info(`[Web] Memory flush completed, rotated thread for conversation=${params.conversationId}`);
+        return true;
+    } catch (error) {
+        params.log.warn(`[Web] Memory flush failed (${params.conversationId}): ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+    }
+}
+
+async function flushWebConversationsOnShutdown(params: {
+    agent: Awaited<ReturnType<typeof createAgent>>['agent'];
+    config: ReturnType<typeof loadConfig>;
+    log: WebLogger;
+    conversationStates: Map<string, WebConversationRuntimeState>;
+    drainTimeoutMs?: number;
+    flushTimeoutMs?: number;
+}): Promise<{
+    drained: boolean;
+    drainedConversations: number;
+    conversationsTotal: number;
+    conversationsFlushed: number;
+    conversationsFlushFailed: number;
+}> {
+    const drainTimeoutMs = Math.max(1000, Math.floor(params.drainTimeoutMs ?? 15000));
+    const flushTimeoutMs = Math.max(1000, Math.floor(params.flushTimeoutMs ?? 30000));
+
+    let drained = true;
+    const pendingTasks = Array.from(conversationQueue.values());
+    if (pendingTasks.length > 0) {
+        params.log.info(`[Web] Waiting pending conversations before shutdown: ${pendingTasks.length}`);
+        try {
+            await withTimeout(
+                Promise.allSettled(pendingTasks).then(() => undefined),
+                drainTimeoutMs,
+                `drain timeout after ${drainTimeoutMs}ms`,
+            );
+        } catch (error) {
+            drained = false;
+            params.log.warn(`[Web] Pending conversation drain skipped: ${String(error)}`);
+        }
+    }
+
+    const entries = Array.from(params.conversationStates.entries());
+    let conversationsFlushed = 0;
+    let conversationsFlushFailed = 0;
+
+    for (const [conversationId, state] of entries) {
+        if (state.flushState.totalTokens <= 0) {
+            continue;
+        }
+        try {
+            await withTimeout(
+                executeWebMemoryFlush({
+                    agent: params.agent,
+                    config: params.config,
+                    conversationId,
+                    state,
+                    log: params.log,
+                }),
+                flushTimeoutMs,
+                `memory flush timeout after ${flushTimeoutMs}ms`,
+            );
+            conversationsFlushed += 1;
+        } catch (error) {
+            conversationsFlushFailed += 1;
+            params.log.warn(`[Web] Shutdown memory flush failed for ${conversationId}: ${String(error)}`);
+        }
+    }
+
+    return {
+        drained,
+        drainedConversations: pendingTasks.length,
+        conversationsTotal: entries.length,
+        conversationsFlushed,
+        conversationsFlushFailed,
+    };
 }
 
 export async function startWebService(options?: {
@@ -79,7 +273,16 @@ export async function startWebService(options?: {
     let webAdapter: WebChannelAdapter | null = null;
     let isShuttingDown = false;
     const bootstrappedThreads = new Set<string>();
+    const conversationStates = new Map<string, WebConversationRuntimeState>();
     const memoryWorkspacePath = resolve(process.cwd(), config.agent.workspace);
+    let compactionModelPromise: Promise<BaseChatModel> | null = null;
+
+    const getCompactionModel = async (): Promise<BaseChatModel> => {
+        if (!compactionModelPromise) {
+            compactionModelPromise = createChatModel(config, { temperature: 0 });
+        }
+        return compactionModelPromise;
+    };
 
     gateway = new GatewayService({
         onProcessInbound: async (message) => {
@@ -109,8 +312,32 @@ export async function startWebService(options?: {
                     return;
                 }
 
-                const threadId = `web-${message.conversationId}`;
+                const conversationState = getOrCreateConversationState(conversationStates, message.conversationId);
+                const compactionModel = await getCompactionModel();
                 const scope = resolveMemoryScope(config.agent.memory.session_isolation);
+                await persistWebTurn({
+                    workspacePath: memoryWorkspacePath,
+                    config,
+                    log,
+                    conversationId: message.conversationId,
+                    role: 'user',
+                    content: userText,
+                    messageId: message.messageId,
+                    senderId: message.senderId,
+                    senderName: message.senderName,
+                    metadata: {
+                        scopeKey: scope.key,
+                        direction: 'inbound',
+                    },
+                });
+                conversationState.flushState = await updateTokenCountWithModel(
+                    conversationState.flushState,
+                    userText,
+                    compactionModel,
+                    config.agent.compaction,
+                );
+
+                const threadId = conversationState.threadId;
                 const invocationMessages: Array<{ role: 'user'; content: string }> = [];
 
                 if (!bootstrappedThreads.has(threadId)) {
@@ -276,6 +503,38 @@ export async function startWebService(options?: {
                             timestamp: Date.now(),
                         },
                     });
+
+                    await persistWebTurn({
+                        workspacePath: memoryWorkspacePath,
+                        config,
+                        log,
+                        conversationId: message.conversationId,
+                        role: 'assistant',
+                        content: fullResponse,
+                        messageId: message.messageId,
+                        senderId: message.senderId,
+                        senderName: message.senderName,
+                        metadata: {
+                            scopeKey: scope.key,
+                            direction: 'outbound',
+                            attachmentCount: attachments.length,
+                        },
+                    });
+                    conversationState.flushState = await updateTokenCountWithModel(
+                        conversationState.flushState,
+                        fullResponse,
+                        compactionModel,
+                        config.agent.compaction,
+                    );
+                    if (shouldTriggerMemoryFlush(conversationState.flushState, config.agent.compaction)) {
+                        await executeWebMemoryFlush({
+                            agent: currentAgent,
+                            config,
+                            conversationId: message.conversationId,
+                            state: conversationState,
+                            log,
+                        });
+                    }
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
                     log.warn(`[Web] stream failed (${message.conversationId}): ${reason}`);
@@ -318,6 +577,25 @@ export async function startWebService(options?: {
         isShuttingDown = true;
 
         log.info('[Web] Shutting down...');
+        try {
+            const shutdownResult = await flushWebConversationsOnShutdown({
+                agent: currentAgent,
+                config,
+                log,
+                conversationStates,
+                drainTimeoutMs: 15000,
+                flushTimeoutMs: 30000,
+            });
+            log.info(
+                `[Web] Shutdown flush summary: drained=${shutdownResult.drained}`
+                + ` pending=${shutdownResult.drainedConversations}`
+                + ` conversations=${shutdownResult.conversationsTotal}`
+                + ` flushed=${shutdownResult.conversationsFlushed}`
+                + ` failed=${shutdownResult.conversationsFlushFailed}`,
+            );
+        } catch (error) {
+            log.warn('[Web] shutdown flush failed:', error instanceof Error ? error.message : String(error));
+        }
 
         if (gateway) {
             try {
@@ -334,6 +612,8 @@ export async function startWebService(options?: {
                 log.warn('[Web] MCP cleanup failed:', error instanceof Error ? error.message : String(error));
             }
         }
+
+        conversationStates.clear();
 
         if (exitOnShutdown) {
             process.exit(0);

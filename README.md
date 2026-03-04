@@ -23,8 +23,8 @@
 |------|------|
 | 🧠 **记忆系统** | PGSQL 增量索引（可回退文件模式），支持 FTS / Vector / Hybrid 检索与会话隔离 |
 | 🧩 **冷启动记忆** | DingTalk 会话首轮可注入“今天/昨天”Markdown 摘要（有注入限额，避免 token 膨胀） |
-| ⚡ **会话向量召回** | `dingtalk_session_events` 向量异步回填 + PG 内 ANN 检索，失败自动回退 FTS / temporal |
-| ♻️ **会话TTL治理** | `dingtalk_session_events` 支持按 TTL 自动清理，控制历史体量与检索成本 |
+| ⚡ **会话向量召回** | `session_events` 向量异步回填 + PG 内 ANN 检索，失败自动回退 FTS / temporal |
+| ♻️ **会话TTL治理** | `session_events` 支持按 TTL 自动清理，控制历史体量与检索成本 |
 | 🧹 **上下文压缩** | 自动 / 手动压缩对话历史，实时展示 Token 使用情况 |
 | 🧭 **Prompt Bootstrap** | 支持 OpenClaw 风格 `AGENTS/TOOLS/SOUL/HEARTBEAT` 多文件注入，含规则优先级与 scope 覆盖 |
 | 🛠️ **技能系统** | 以 `SKILL.md` 定义技能，动态加载并通过子代理协作 |
@@ -299,7 +299,7 @@ MEMORY_PG_PASSWORD="xxx"
         "hybrid_vector_weight": 0.6,
         "hybrid_fts_weight": 0.4,
         "hybrid_candidate_multiplier": 2,
-        "include_session_events": true,   // 是否把 dingtalk_session_events 纳入统一检索
+        "include_session_events": true,   // 是否把 session_events 纳入统一检索
         "session_events_max_results": 6,  // 每次检索最多合并多少条 session events
         "session_events_vector_async_enabled": true,
         "session_events_vector_async_interval_ms": 5000,
@@ -321,7 +321,8 @@ MEMORY_PG_PASSWORD="xxx"
       },
       "session_isolation": {
         "enabled": true,
-        "direct_scope": "main",       // main | direct
+        "direct_scope": "direct",     // main | direct (非 Web 渠道)
+        "web_direct_scope": "main",   // main | direct (Web 直连默认共享团队记忆)
         "group_scope_prefix": "group_"
       },
       "transcript": {
@@ -329,6 +330,40 @@ MEMORY_PG_PASSWORD="xxx"
       }
     }
   }
+}
+```
+
+会话隔离策略说明：
+
+- `direct_scope`：控制非 Web 直连渠道的 direct scope，目前主要是 DingTalk / iOS。`main` 表示共享团队记忆，`direct` 表示按发送者隔离。
+- `web_direct_scope`：控制 Web 直连渠道。`main` 表示所有 Web 用户共享团队记忆，`direct` 表示按 `user_id` 隔离。
+- `group_scope_prefix`：控制群聊/共享会话的 scope 前缀；同一个 `conversationId` / `session_id` 仍然会按会话隔离。
+
+常见组合：
+
+```jsonc
+// 1) 团队共享 Agent：DingTalk + Web 都共享同一份记忆
+"session_isolation": {
+  "enabled": true,
+  "direct_scope": "main",
+  "web_direct_scope": "main",
+  "group_scope_prefix": "group_"
+}
+
+// 2) 混合模式：DingTalk 私聊隔离，Web 共享
+"session_isolation": {
+  "enabled": true,
+  "direct_scope": "direct",
+  "web_direct_scope": "main",
+  "group_scope_prefix": "group_"
+}
+
+// 3) 全隔离模式：DingTalk 和 Web 都按用户隔离
+"session_isolation": {
+  "enabled": true,
+  "direct_scope": "direct",
+  "web_direct_scope": "direct",
+  "group_scope_prefix": "group_"
 }
 ```
 

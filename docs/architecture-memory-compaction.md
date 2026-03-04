@@ -31,7 +31,7 @@ flowchart TD
 
     I --> J["按需调用 memory_search"]
     J --> K["检索 memory_chunks (FTS / Vector / Hybrid)"]
-    J --> L["检索 dingtalk_session_events (会话热日志)"]
+    J --> L["检索 session_events (会话热日志)"]
     J --> T["回溯意图触发时间窗口检索 (昨天/上次/之前)"]
     J --> M["PG 不可用时回退文件 keyword 检索"]
     K --> J2["需要精确引用时调用 memory_get(path/from/lines)"]

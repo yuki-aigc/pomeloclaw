@@ -32,6 +32,13 @@ function buildGroupScopeKey(prefix: string, channel: string, conversationId: str
     return `${prefix}${channelPart}_${conversation}`;
 }
 
+function resolveDirectScopeMode(config: AgentMemorySessionIsolationConfig, channel: string): 'main' | 'direct' {
+    if (sanitizeScopePart(channel) === 'web') {
+        return config.web_direct_scope;
+    }
+    return config.direct_scope;
+}
+
 export function resolveMemoryScope(config: AgentMemorySessionIsolationConfig): MemoryScope {
     const context = getChannelConversationContext();
     if (!context || !config.enabled) {
@@ -39,7 +46,7 @@ export function resolveMemoryScope(config: AgentMemorySessionIsolationConfig): M
     }
 
     if (context.isDirect) {
-        if (config.direct_scope === 'direct') {
+        if (resolveDirectScopeMode(config, context.channel) === 'direct') {
             return {
                 key: buildDirectScopeKey(context.channel, context.senderId),
                 kind: 'direct',

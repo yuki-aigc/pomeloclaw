@@ -35,7 +35,7 @@ import {
     buildMemoryFlushPrompt,
     isNoReplyResponse,
     markFlushCompleted,
-    recordSessionTranscript,
+    recordSessionEvent,
     setTotalTokens,
     shouldTriggerMemoryFlush,
     type MemoryFlushState,
@@ -356,27 +356,30 @@ async function persistSessionEvent(params: {
     }
 
     if (params.store) {
-        await params.store.appendEvent({
-            sessionKey: params.sessionKey,
-            conversationId: params.conversationId,
-            role: params.role,
-            content: text,
-            metadata: params.metadata,
-        }).catch((error) => {
+        try {
+            await params.store.appendEvent({
+                sessionKey: params.sessionKey,
+                conversationId: params.conversationId,
+                role: params.role,
+                content: text,
+                channel: 'dingtalk',
+                metadata: params.metadata,
+            });
+            return;
+        } catch (error) {
             params.log.warn(`[DingTalk] Failed to persist session event (${params.role}): ${String(error)}`);
-        });
-        return;
+        }
     }
 
-    if (params.role === 'summary') {
-        await recordSessionTranscript(params.workspacePath, params.config, 'assistant', `[压缩摘要] ${text}`)
-            .catch((error) => params.log.debug('[DingTalk] Transcript(summary) write skipped:', String(error)));
-        return;
-    }
-
-    const fallbackRole = params.role === 'assistant' ? 'assistant' : 'user';
-    await recordSessionTranscript(params.workspacePath, params.config, fallbackRole, text)
-        .catch((error) => params.log.debug(`[DingTalk] Transcript(${fallbackRole}) write skipped:`, String(error)));
+    await recordSessionEvent(params.workspacePath, params.config, {
+        role: params.role,
+        content: text,
+        conversationId: params.conversationId,
+        channel: 'dingtalk',
+        metadata: params.metadata,
+    }).catch((error) => {
+        params.log.debug(`[DingTalk] Session event fallback(${params.role}) skipped:`, String(error));
+    });
 }
 
 /**
