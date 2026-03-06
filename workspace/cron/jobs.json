@@ -7,7 +7,7 @@
       "description": "自动创建，请勿删除。[system:auto-memory-save-4am:v1]",
       "enabled": true,
       "createdAtMs": 1770709421291,
-      "updatedAtMs": 1772568051970,
+      "updatedAtMs": 1772740814434,
       "schedule": {
         "kind": "cron",
         "expr": "0 4 * * *",
@@ -24,11 +24,11 @@
         "title": "SREBot 定时任务"
       },
       "state": {
-        "nextRunAtMs": 1772654400000,
-        "lastRunAtMs": 1772568051970,
+        "nextRunAtMs": 1772827200000,
+        "lastRunAtMs": 1772740814434,
         "lastStatus": "error",
         "lastError": "Request failed with status code 400",
-        "lastDurationMs": 51962
+        "lastDurationMs": 14427
       }
     }
   ]
