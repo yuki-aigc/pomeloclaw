@@ -29,6 +29,10 @@ export interface DingTalkInboundMessage {
             type: string;
             text?: string;
             atName?: string;
+            downloadCode?: string;
+            fileName?: string;
+            title?: string;
+            content?: string;
         }>;
     };
     conversationType: string;

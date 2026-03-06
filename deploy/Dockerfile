@@ -15,7 +15,8 @@ RUN sed -i 's@//archive.ubuntu.com@//mirrors.aliyun.com@g' /etc/apt/sources.list
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl ca-certificates git vim python3 python3-pip python3-venv \
-        default-mysql-client tzdata && \
+        default-mysql-client tzdata  && \
+    apt-get install -y  pandoc lmodern texlive-latex-recommended texlive-fonts-recommended texlive-xetex  texlive-lang-chinese fonts-noto-cjk && \
     ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -36,8 +37,8 @@ ENV HOME=/home/ubuntu
 
 # 安装pnpm，claude code,  uvx等
 RUN npm install -g pnpm && \
-curl -LsSf https://astral.sh/uv/install.sh | sh && \
-curl -fsSL https://claude.ai/install.sh | bash
+curl -LsSf https://astral.sh/uv/install.sh | sh 
+# curl -fsSL https://claude.ai/install.sh | bash
 
 WORKDIR /app
 

@@ -151,11 +151,58 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
     if (msgtype === 'richText') {
         const richTextParts = data.content?.richText || [];
         let text = '';
+        let mediaPath: string | undefined;
+        let mediaType: string | undefined;
+        let richTextFileName: string | undefined;
         for (const part of richTextParts) {
             if (part.type === 'text' && part.text) text += part.text;
             if (part.type === 'at' && part.atName) text += `@${part.atName} `;
+            if (!mediaPath && part.downloadCode) {
+                const partType = part.type.toLowerCase();
+                if (partType === 'picture' || partType === 'image') {
+                    mediaPath = part.downloadCode;
+                    mediaType = 'image';
+                } else if (partType === 'file') {
+                    mediaPath = part.downloadCode;
+                    mediaType = 'file';
+                    richTextFileName = part.fileName || part.title;
+                } else if (partType === 'video') {
+                    mediaPath = part.downloadCode;
+                    mediaType = 'video';
+                }
+            }
         }
-        return { text: text.trim() || '[富文本消息]', messageType: 'richText' };
+        const normalizedText = text.trim();
+        if (mediaPath && mediaType === 'file' && !normalizedText) {
+            return {
+                text: `[文件: ${richTextFileName || '文件'}]`,
+                mediaPath,
+                mediaType,
+                messageType: 'richText',
+            };
+        }
+        if (mediaPath && mediaType === 'image' && !normalizedText) {
+            return {
+                text: '[图片]',
+                mediaPath,
+                mediaType,
+                messageType: 'richText',
+            };
+        }
+        if (mediaPath && mediaType === 'video' && !normalizedText) {
+            return {
+                text: '[视频]',
+                mediaPath,
+                mediaType,
+                messageType: 'richText',
+            };
+        }
+        return {
+            text: normalizedText || '[富文本消息]',
+            mediaPath,
+            mediaType,
+            messageType: 'richText',
+        };
     }
 
     if (msgtype === 'picture') {

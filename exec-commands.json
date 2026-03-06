@@ -31,7 +31,8 @@
         "claude",
         "pip",
         "pip3",
-        "python3"
+        "python3",
+        "pandoc"
     ],
     "deniedCommands": [
         "rm",
