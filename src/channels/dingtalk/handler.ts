@@ -66,6 +66,7 @@ import { withDingTalkConversationContext, consumeQueuedDingTalkReplyFiles } from
 import { resolveMemoryScope, type MemoryScope } from '../../middleware/memory-scope.js';
 import { DingTalkSessionStore, createSessionThreadId } from './session-store.js';
 import { buildPromptBootstrapMessage } from '../../prompt/bootstrap.js';
+import { executeSkillSlashCommand } from '../../skills/index.js';
 
 // Session state cache (scopeKey -> SessionState)
 const sessionCache = new Map<string, SessionState>();
@@ -1516,6 +1517,9 @@ export interface MessageHandlerContext {
     dingtalkConfig: DingTalkConfig;
     log: Logger;
     switchModel?: (alias: string) => Promise<{ alias: string; model: string }>;
+    reloadAgent?: () => Promise<void>;
+    reloadIfNeeded?: () => Promise<void>;
+    skillsDir?: string;
 }
 
 type ModelSlashCommand = { type: 'list' } | { type: 'switch'; alias: string };
@@ -1603,6 +1607,10 @@ function buildHelpMessage(currentModelAlias: string): string {
         '- `/status` 查看当前会话状态',
         '- `/models` 查看可用模型列表',
         '- `/model <别名>` 切换模型（例如 `/model qwen`）',
+        '- `/skills` 查看已安装技能',
+        '- `/skill-install <来源>` 远程或本地安装技能',
+        '- `/skill-remove <名称>` 删除已安装技能',
+        '- `/skill-reload` 重新加载技能索引',
         '- `/voice` 查看语音输入开关状态',
         '- `/voice on` / `/voice off` 开关语音输入',
         '- `/help` 或 `/?` 查看本帮助',
@@ -1655,10 +1663,27 @@ async function tryHandleSlashCommand(params: {
     isDirect: boolean;
     senderId: string;
 }): Promise<boolean> {
+    const mention = { atUserId: !params.isDirect ? params.senderId : null };
+    if (params.ctx.skillsDir && params.ctx.reloadAgent) {
+        const skillCommand = await executeSkillSlashCommand({
+            input: params.text,
+            skillsDir: params.ctx.skillsDir,
+            reloadAgent: params.ctx.reloadAgent,
+        });
+        if (skillCommand.handled) {
+            await sendBySession(
+                params.ctx.dingtalkConfig,
+                params.sessionWebhook,
+                skillCommand.response || '已处理技能命令。',
+                mention,
+                params.ctx.log
+            );
+            return true;
+        }
+    }
+
     const parsed = parseSlashCommand(params.text);
     if (!parsed) return false;
-
-    const mention = { atUserId: !params.isDirect ? params.senderId : null };
     if (parsed.type === 'status') {
         const message = buildStatusMessage({
             config: params.ctx.config,
@@ -1825,6 +1850,7 @@ async function handleMessageInternal(
     ctx: MessageHandlerContext
 ): Promise<void> {
     const { config, log } = ctx;
+    await ctx.reloadIfNeeded?.();
     const persistedSessionStore = await getSessionStore(config, log);
     const isDirect = data.conversationType === '1';
     const senderId = data.senderStaffId || data.senderId;

@@ -34,6 +34,7 @@ import {
     type MemoryFlushState,
     updateTokenCountWithModel,
 } from './middleware/index.js';
+import { createSkillDirectoryMonitor, executeSkillSlashCommand } from './skills/index.js';
 
 // ANSI terminal colors
 const colors = {
@@ -210,7 +211,15 @@ async function main() {
     let totalOutputTokens = 0;
     let hasConversation = false;
     const memoryWorkspacePath = resolve(process.cwd(), config.agent.workspace);
+    const skillsPath = resolve(process.cwd(), config.agent.skills_dir);
     const appVersion = process.env.npm_package_version || '1.0.0';
+    const skillMonitor = createSkillDirectoryMonitor({
+        skillsDir: skillsPath,
+        onChange: () => {
+            conversationRuntime.requestReload();
+            console.log(`\n${colors.gray}[Skills] 检测到本地技能变更，将在下一轮请求前重载。${colors.reset}`);
+        },
+    });
 
     const getAgentConfig = () => ({
         configurable: { thread_id: threadId },
@@ -373,6 +382,7 @@ async function main() {
         } catch (error) {
             console.warn(`${colors.yellow}[MCP] cleanup failed:${colors.reset}`, error instanceof Error ? error.message : String(error));
         }
+        skillMonitor.close();
 
         console.log(`\n${colors.gray}Goodbye! 👋${colors.reset}`);
         rl.close();
@@ -404,6 +414,23 @@ async function main() {
             if (userInput.toLowerCase() === 'exit' || userInput.toLowerCase() === 'quit') {
                 await gracefulExit();
                 break;
+            }
+
+            const skillCommand = await executeSkillSlashCommand({
+                input: userInput,
+                skillsDir: skillsPath,
+                reloadAgent: async () => {
+                    await conversationRuntime.reloadAgent();
+                    agent = conversationRuntime.getAgent();
+                },
+            });
+            if (skillCommand.handled) {
+                console.log();
+                console.log(`${colors.white}● ${colors.reset}${skillCommand.response || ''}`);
+                console.log();
+                console.log(`${colors.gray}${'━'.repeat(output.columns || 50)}${colors.reset}`);
+                console.log();
+                continue;
             }
 
             // Check for slash commands
@@ -457,6 +484,10 @@ async function main() {
                     console.log();
                     continue;
                 }
+            }
+
+            if (await conversationRuntime.reloadIfNeeded()) {
+                agent = conversationRuntime.getAgent();
             }
 
             hasConversation = true;

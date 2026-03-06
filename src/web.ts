@@ -2,12 +2,12 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { createAgent } from './agent.js';
+import type { RuntimeAgent } from './agent.js';
 import { loadConfig } from './config.js';
-import { createChatModel } from './llm.js';
+import { ConversationRuntime } from './conversation/runtime.js';
+import { createChatModel, getActiveModelAlias, getActiveModelEntry, listConfiguredModels } from './llm.js';
 import { createWebChannelAdapter, type WebLogger, type WebChannelAdapter } from './channels/web/index.js';
 import { GatewayService } from './channels/gateway/index.js';
-import { buildPromptBootstrapMessage } from './prompt/bootstrap.js';
 import {
     buildMemoryFlushPrompt,
     createMemoryFlushState,
@@ -28,6 +28,7 @@ import {
     terminalColors as colors,
     toGatewayLogger,
 } from './channels/runtime-entry.js';
+import { formatTokenCount, getCompactionHardContextBudget, getContextUsageInfo, getEffectiveAutoCompactThreshold } from './compaction/index.js';
 import {
     extractBestReadableReplyFromMessages,
     extractReplyTextFromEventData,
@@ -38,13 +39,25 @@ import {
     sanitizeUserFacingText,
 } from './channels/streaming.js';
 import type { RuntimeLogWriter } from './log/runtime.js';
+import { createSkillDirectoryMonitor, executeSkillSlashCommand } from './skills/index.js';
 
 const conversationQueue = new Map<string, Promise<void>>();
 
 interface WebConversationRuntimeState {
     threadId: string;
     flushState: MemoryFlushState;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    lastUpdatedAt: number;
 }
+
+type WebSlashCommand =
+    | { type: 'list_models' }
+    | { type: 'status' }
+    | { type: 'switch_model'; alias: string }
+    | { type: 'voice'; mode: 'status' | 'toggle'; enabled?: boolean }
+    | { type: 'help' }
+    | { type: 'unknown'; command: string };
 
 function composeInboundWebText(text: string, mediaContext: string | null): string {
     const normalizedText = text.trim();
@@ -91,6 +104,208 @@ function createWebThreadId(conversationId: string): string {
     return `web-${conversationId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
 }
 
+function parseWebSlashCommand(input: string): WebSlashCommand | null {
+    const text = input.trim();
+    if (!text.startsWith('/')) {
+        return null;
+    }
+    if (text === '/models') {
+        return { type: 'list_models' };
+    }
+    if (text === '/status') {
+        return { type: 'status' };
+    }
+    if (text === '/model') {
+        return { type: 'switch_model', alias: '' };
+    }
+    if (text.startsWith('/model ')) {
+        return { type: 'switch_model', alias: text.slice('/model'.length).trim() };
+    }
+    if (text === '/voice') {
+        return { type: 'voice', mode: 'status' };
+    }
+    if (text.startsWith('/voice ')) {
+        const arg = text.slice('/voice'.length).trim().toLowerCase();
+        if (arg === 'on') {
+            return { type: 'voice', mode: 'toggle', enabled: true };
+        }
+        if (arg === 'off') {
+            return { type: 'voice', mode: 'toggle', enabled: false };
+        }
+        return { type: 'voice', mode: 'status' };
+    }
+    if (text === '/help' || text === '/?') {
+        return { type: 'help' };
+    }
+    const command = text.split(/\s+/, 1)[0] || text;
+    return { type: 'unknown', command };
+}
+
+function maskApiKey(apiKey: string): string {
+    if (!apiKey) return '(not set)';
+    if (apiKey.length <= 8) return `${apiKey.slice(0, 2)}...${apiKey.slice(-2)}`;
+    return `${apiKey.slice(0, 6)}...${apiKey.slice(-6)}`;
+}
+
+function formatRelativeTime(updatedAt: number): string {
+    const diffMs = Math.max(0, Date.now() - updatedAt);
+    const diffSec = Math.floor(diffMs / 1000);
+    if (diffSec < 5) return '刚刚';
+    if (diffSec < 60) return `${diffSec} 秒前`;
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+    return `${Math.floor(diffSec / 86400)} 天前`;
+}
+
+function buildWebHelpMessage(currentModelAlias: string): string {
+    return [
+        '## 命令帮助',
+        '',
+        '- `/status` 查看当前会话状态',
+        '- `/models` 查看可用模型列表',
+        '- `/model <别名>` 切换模型（例如 `/model qwen`）',
+        '- `/skills` 查看已安装技能',
+        '- `/skill-install <来源>` 远程或本地安装技能',
+        '- `/skill-remove <名称>` 删除已安装技能',
+        '- `/skill-reload` 重新加载技能索引',
+        '- `/voice` / `/voice on` / `/voice off` 在 Web 渠道暂不支持',
+        '- `/help` 或 `/?` 查看本帮助',
+        '',
+        `当前模型：\`${currentModelAlias}\``,
+    ].join('\n');
+}
+
+function buildWebStatusMessage(params: {
+    config: ReturnType<typeof loadConfig>;
+    state: WebConversationRuntimeState;
+}): string {
+    const { config, state } = params;
+    const activeAlias = getActiveModelAlias(config);
+    const activeModel = getActiveModelEntry(config);
+    const contextConfig = config.agent.compaction;
+    const effectiveThreshold = getEffectiveAutoCompactThreshold(contextConfig);
+    const hardBudget = getCompactionHardContextBudget(contextConfig);
+    const appVersion = process.env.npm_package_version || '1.0.0';
+    const contextRatio = (state.flushState.totalTokens / contextConfig.context_window) * 100;
+    const contextPercent = contextRatio >= 1
+        ? Math.round(contextRatio)
+        : Number(contextRatio.toFixed(1));
+    const modelLabel = `${activeModel.provider}/${activeModel.model}`;
+    const providerAlias = `${activeModel.provider}:${activeAlias}`;
+
+    return [
+        `## SRE Bot ${appVersion} 状态`,
+        '',
+        `- 模型：\`${modelLabel}\``,
+        `- 别名：\`${providerAlias}\``,
+        `- API Key：\`${maskApiKey(activeModel.api_key)}\``,
+        `- Token：输入 ${formatTokenCount(state.totalInputTokens)} / 输出 ${formatTokenCount(state.totalOutputTokens)}`,
+        `- 上下文：${formatTokenCount(state.flushState.totalTokens)} / ${formatTokenCount(contextConfig.context_window)}（${contextPercent}%）`,
+        `- 压缩次数：${state.flushState.flushCount}`,
+        `- 会话：\`${state.threadId}\``,
+        `- 最近更新：${formatRelativeTime(state.lastUpdatedAt)}`,
+        '- 运行模式：web（think=low，queue=collect depth=0）',
+        '',
+        getContextUsageInfo(state.flushState.totalTokens, contextConfig),
+        `自动压缩阈值：${formatTokenCount(effectiveThreshold)}（hard budget: ${formatTokenCount(hardBudget)}）`,
+    ].join('\n');
+}
+
+async function sendImmediateWebReply(params: {
+    adapter: WebChannelAdapter;
+    inbound: {
+        messageId: string;
+        conversationId: string;
+    } & Parameters<WebChannelAdapter['sendStreamEvent']>[0]['inbound'];
+    text: string;
+}): Promise<void> {
+    await params.adapter.sendStreamEvent({
+        inbound: params.inbound,
+        payload: {
+            type: 'reply_start',
+            sourceMessageId: params.inbound.messageId,
+            request_id: params.inbound.messageId,
+            conversationId: params.inbound.conversationId,
+            session_id: params.inbound.conversationId,
+            timestamp: Date.now(),
+        },
+    });
+    await params.adapter.sendStreamEvent({
+        inbound: params.inbound,
+        payload: {
+            type: 'reply_final',
+            sourceMessageId: params.inbound.messageId,
+            request_id: params.inbound.messageId,
+            conversationId: params.inbound.conversationId,
+            session_id: params.inbound.conversationId,
+            text: params.text,
+            attachments: [],
+            finishReason: 'completed',
+            timestamp: Date.now(),
+        },
+    });
+}
+
+async function tryHandleWebSlashCommand(params: {
+    text: string;
+    config: ReturnType<typeof loadConfig>;
+    state: WebConversationRuntimeState;
+    conversationRuntime: ConversationRuntime;
+    onModelChanged: () => void;
+}): Promise<string | null> {
+    const parsed = parseWebSlashCommand(params.text);
+    if (!parsed) {
+        return null;
+    }
+
+    if (parsed.type === 'status') {
+        return buildWebStatusMessage({
+            config: params.config,
+            state: params.state,
+        });
+    }
+
+    if (parsed.type === 'list_models') {
+        const activeAlias = getActiveModelAlias(params.config);
+        const lines = listConfiguredModels(params.config)
+            .map((item) => `- ${item.alias === activeAlias ? '✅' : '▫️'} \`${item.alias}\` (${item.provider}) → ${item.model}`)
+            .join('\n');
+        return lines
+            ? `## 已配置模型\n\n${lines}\n\n当前模型：\`${activeAlias}\``
+            : '## 已配置模型\n\n当前没有可用模型配置。';
+    }
+
+    if (parsed.type === 'help') {
+        return buildWebHelpMessage(getActiveModelAlias(params.config));
+    }
+
+    if (parsed.type === 'voice') {
+        return parsed.mode === 'toggle'
+            ? 'ℹ️ Web 渠道当前不支持 `/voice on` / `/voice off`。该命令仅在 DingTalk 语音输入链路下生效。'
+            : 'ℹ️ Web 渠道当前不支持 `/voice`。该命令仅在 DingTalk 语音输入链路下生效。';
+    }
+
+    if (parsed.type === 'unknown') {
+        return `❓ 未知命令：\`${parsed.command}\`\n\n发送 \`/help\` 查看可用命令。`;
+    }
+
+    if (!parsed.alias) {
+        return `ℹ️ 用法: /model <模型别名>\n当前模型: ${getActiveModelAlias(params.config)}`;
+    }
+
+    if (parsed.alias === getActiveModelAlias(params.config)) {
+        return `ℹ️ 当前已在使用模型: ${parsed.alias}`;
+    }
+
+    try {
+        const result = await params.conversationRuntime.switchModel(parsed.alias);
+        params.onModelChanged();
+        return `✅ 已切换模型: ${result.alias} (${result.model})`;
+    } catch (error) {
+        return `❌ 切换模型失败: ${error instanceof Error ? error.message : String(error)}`;
+    }
+}
+
 function getOrCreateConversationState(
     conversationStates: Map<string, WebConversationRuntimeState>,
     conversationId: string,
@@ -103,6 +318,9 @@ function getOrCreateConversationState(
     const created: WebConversationRuntimeState = {
         threadId: createWebThreadId(conversationId),
         flushState: createMemoryFlushState(),
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        lastUpdatedAt: Date.now(),
     };
     conversationStates.set(conversationId, created);
     return created;
@@ -147,7 +365,7 @@ async function persistWebTurn(params: {
 }
 
 async function executeWebMemoryFlush(params: {
-    agent: Awaited<ReturnType<typeof createAgent>>['agent'];
+    agent: RuntimeAgent;
     config: ReturnType<typeof loadConfig>;
     conversationId: string;
     state: WebConversationRuntimeState;
@@ -182,7 +400,7 @@ async function executeWebMemoryFlush(params: {
 }
 
 async function flushWebConversationsOnShutdown(params: {
-    agent: Awaited<ReturnType<typeof createAgent>>['agent'];
+    agent: RuntimeAgent;
     config: ReturnType<typeof loadConfig>;
     log: WebLogger;
     conversationStates: Map<string, WebConversationRuntimeState>;
@@ -279,19 +497,28 @@ export async function startWebService(options?: {
     });
 
     log.info('[Web] Initializing agent...');
-    const initialAgentContext = await createAgent(config, {
+    const conversationRuntime = new ConversationRuntime({
         runtimeChannel: 'web',
+        config,
     });
+    await conversationRuntime.initialize();
 
-    let currentAgent = initialAgentContext.agent;
-    let cleanup = initialAgentContext.cleanup;
+    let currentAgent = conversationRuntime.getAgent();
     let gateway: GatewayService | null = null;
     let webAdapter: WebChannelAdapter | null = null;
     let isShuttingDown = false;
-    const bootstrappedThreads = new Set<string>();
     const conversationStates = new Map<string, WebConversationRuntimeState>();
     const memoryWorkspacePath = resolve(process.cwd(), config.agent.workspace);
+    const skillsPath = resolve(process.cwd(), config.agent.skills_dir);
     let compactionModelPromise: Promise<BaseChatModel> | null = null;
+    const skillMonitor = createSkillDirectoryMonitor({
+        skillsDir: skillsPath,
+        logger: log,
+        onChange: () => {
+            conversationRuntime.requestReload();
+            log.info('[Web] Skills changed on disk, reload scheduled for next request.');
+        },
+    });
 
     const getCompactionModel = async (): Promise<BaseChatModel> => {
         if (!compactionModelPromise) {
@@ -311,6 +538,29 @@ export async function startWebService(options?: {
             }
 
             await enqueueConversationTask(message.conversationId, async () => {
+                await conversationRuntime.reloadIfNeeded();
+                currentAgent = conversationRuntime.getAgent();
+                const conversationState = getOrCreateConversationState(conversationStates, message.conversationId);
+                conversationState.lastUpdatedAt = Date.now();
+
+                const slashResponse = await tryHandleWebSlashCommand({
+                    text: message.text,
+                    config,
+                    state: conversationState,
+                    conversationRuntime,
+                    onModelChanged: () => {
+                        currentAgent = conversationRuntime.getAgent();
+                    },
+                });
+                if (slashResponse) {
+                    await sendImmediateWebReply({
+                        adapter,
+                        inbound: message,
+                        text: slashResponse,
+                    });
+                    return;
+                }
+
                 const mediaContext = await buildAttachmentMediaContext({
                     config,
                     attachments: message.attachments || [],
@@ -333,7 +583,23 @@ export async function startWebService(options?: {
                     return;
                 }
 
-                const conversationState = getOrCreateConversationState(conversationStates, message.conversationId);
+                const skillCommand = await executeSkillSlashCommand({
+                    input: userText,
+                    skillsDir: skillsPath,
+                    reloadAgent: async () => {
+                        await conversationRuntime.reloadAgent();
+                        currentAgent = conversationRuntime.getAgent();
+                    },
+                });
+                if (skillCommand.handled) {
+                    await sendImmediateWebReply({
+                        adapter,
+                        inbound: message,
+                        text: skillCommand.response || '已处理技能命令。',
+                    });
+                    return;
+                }
+
                 const compactionModel = await getCompactionModel();
                 const scope = resolveMemoryScope(config.agent.memory.session_isolation);
                 await persistWebTurn({
@@ -352,26 +618,21 @@ export async function startWebService(options?: {
                         attachmentCount: message.attachments?.length || 0,
                     },
                 });
+                const tokensBeforeInput = conversationState.flushState.totalTokens;
                 conversationState.flushState = await updateTokenCountWithModel(
                     conversationState.flushState,
                     userText,
                     compactionModel,
                     config.agent.compaction,
                 );
+                conversationState.totalInputTokens += Math.max(0, conversationState.flushState.totalTokens - tokensBeforeInput);
 
                 const threadId = conversationState.threadId;
-                const invocationMessages: Array<{ role: 'user'; content: string }> = [];
-
-                if (!bootstrappedThreads.has(threadId)) {
-                    const bootstrapPromptMessage = await buildPromptBootstrapMessage({
-                        workspacePath: memoryWorkspacePath,
-                        scopeKey: scope.key,
-                    });
-                    if (bootstrapPromptMessage) {
-                        invocationMessages.push(bootstrapPromptMessage);
-                    }
-                    bootstrappedThreads.add(threadId);
-                }
+                const invocationMessages = await conversationRuntime.buildBootstrapMessages({
+                    threadId,
+                    workspacePath: memoryWorkspacePath,
+                    scopeKey: scope.key,
+                });
 
                 invocationMessages.push({
                     role: 'user',
@@ -542,12 +803,15 @@ export async function startWebService(options?: {
                             attachmentCount: attachments.length,
                         },
                     });
+                    const tokensBeforeOutput = conversationState.flushState.totalTokens;
                     conversationState.flushState = await updateTokenCountWithModel(
                         conversationState.flushState,
                         fullResponse,
                         compactionModel,
                         config.agent.compaction,
                     );
+                    conversationState.totalOutputTokens += Math.max(0, conversationState.flushState.totalTokens - tokensBeforeOutput);
+                    conversationState.lastUpdatedAt = Date.now();
                     if (shouldTriggerMemoryFlush(conversationState.flushState, config.agent.compaction)) {
                         await executeWebMemoryFlush({
                             agent: currentAgent,
@@ -627,12 +891,12 @@ export async function startWebService(options?: {
             }
         }
 
-        if (cleanup) {
-            try {
-                await cleanup();
-            } catch (error) {
-                log.warn('[Web] MCP cleanup failed:', error instanceof Error ? error.message : String(error));
-            }
+        skillMonitor.close();
+
+        try {
+            await conversationRuntime.close();
+        } catch (error) {
+            log.warn('[Web] MCP cleanup failed:', error instanceof Error ? error.message : String(error));
         }
 
         conversationStates.clear();

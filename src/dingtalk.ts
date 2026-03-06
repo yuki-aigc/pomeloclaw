@@ -40,6 +40,7 @@ import {
     terminalColors as colors,
     toGatewayLogger,
 } from './channels/runtime-entry.js';
+import { createSkillDirectoryMonitor } from './skills/index.js';
 
 const AUTO_MEMORY_SAVE_JOB_NAME = '系统任务：每日记忆归档(04:00)';
 const AUTO_MEMORY_SAVE_JOB_MARKER = '[system:auto-memory-save-4am:v1]';
@@ -621,6 +622,7 @@ export async function startDingTalkService(options?: {
 
     const dingtalkConfig = config.dingtalk;
     const memoryWorkspacePath = resolve(process.cwd(), config.agent.workspace);
+    const skillsPath = resolve(process.cwd(), config.agent.skills_dir);
 
     if (!dingtalkConfig.clientId || !dingtalkConfig.clientSecret) {
         throw new Error('DingTalk clientId and clientSecret are required');
@@ -657,6 +659,14 @@ export async function startDingTalkService(options?: {
     await conversationRuntime.initialize();
     let currentAgent = conversationRuntime.getAgent();
     log.info('[DingTalk] Agent initialized successfully');
+    const skillMonitor = createSkillDirectoryMonitor({
+        skillsDir: skillsPath,
+        logger: log,
+        onChange: () => {
+            conversationRuntime.requestReload();
+            log.info('[DingTalk] Skills changed on disk, reload scheduled for next request.');
+        },
+    });
 
     // Create DingTalk Stream client
     log.info('[DingTalk] Connecting to DingTalk Stream...');
@@ -682,6 +692,19 @@ export async function startDingTalkService(options?: {
             ctx.agent = currentAgent;
             return result;
         },
+        reloadAgent: async () => {
+            await conversationRuntime.reloadAgent();
+            currentAgent = conversationRuntime.getAgent();
+            ctx.agent = currentAgent;
+        },
+        reloadIfNeeded: async () => {
+            const reloaded = await conversationRuntime.reloadIfNeeded();
+            if (reloaded) {
+                currentAgent = conversationRuntime.getAgent();
+                ctx.agent = currentAgent;
+            }
+        },
+        skillsDir: skillsPath,
     };
 
     cronService = new CronService({
@@ -712,6 +735,10 @@ export async function startDingTalkService(options?: {
                     error: `任务 ${job.id} 未配置发送目标；请设置 cron_job_add.target 或 config.dingtalk.cron.defaultTarget`,
                 };
             }
+
+            await conversationRuntime.reloadIfNeeded();
+            currentAgent = conversationRuntime.getAgent();
+            ctx.agent = currentAgent;
 
             const threadId = `cron-${job.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
             const cronMessages = await conversationRuntime.buildBootstrapMessages({
@@ -891,6 +918,7 @@ export async function startDingTalkService(options?: {
             }
             setCronService('dingtalk', null);
         }
+        skillMonitor.close();
 
         try {
             const shutdownResult = await flushSessionsOnShutdown({

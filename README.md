@@ -27,10 +27,10 @@
 | ♻️ **会话TTL治理** | `session_events` 支持按 TTL 自动清理，控制历史体量与检索成本 |
 | 🧹 **上下文压缩** | 自动 / 手动压缩对话历史，实时展示 Token 使用情况 |
 | 🧭 **Prompt Bootstrap** | 支持 OpenClaw 风格 `AGENTS/TOOLS/SOUL/HEARTBEAT` 多文件注入，含规则优先级与 scope 覆盖 |
-| 🛠️ **技能系统** | 以 `SKILL.md` 定义技能，动态加载并通过子代理协作 |
+| 🛠️ **技能系统** | 以 `SKILL.md` 定义技能，支持热重载、本地/远程安装，并通过子代理协作 |
 | 🔌 **MCP 集成** | 通过 `@langchain/mcp-adapters` 挂载 MCP 工具（stdio / http / sse） |
 | 🤖 **多模型支持** | OpenAI / Anthropic（多模型配置池，运行时 `/model` 热切换） |
-| 🌉 **渠道网关** | 引入 `GatewayService + ChannelAdapter` 抽象，已接入 DingTalk + iOS WebSocket，支持后续扩展飞书 / 安卓等渠道 |
+| 🌉 **渠道网关** | 引入 `GatewayService + ChannelAdapter` 抽象，已接入 DingTalk + iOS WebSocket + Web UI/WebSocket，支持后续扩展飞书 / 安卓等渠道 |
 | ⏰ **定时任务** | Cron 调度，支持持久化、JSONL 运行日志、群聊 / 私聊推送；启动时幂等确保 04:00 每日记忆归档任务 |
 | 🧾 **命令执行** | 白名单 / 黑名单策略 + 审批机制，超时与输出长度限制 |
 | 📁 **文件读写** | 基于 `FilesystemBackend` 的工作区文件系统，支撑记忆与技能存储 |
@@ -105,6 +105,8 @@ pnpm start:server
 
 ## 文档导航
 
+- [命令与运行方式](docs/commands.md)
+- [上下文文件与优先级](docs/context-files.md)
 - [Memory 机制说明](docs/memory.md)
 - [Compaction 机制说明](docs/compaction.md)
 - [Memory + Compaction 流程图](docs/architecture-memory-compaction.md)
@@ -114,7 +116,7 @@ pnpm start:server
 
 ## 项目结构
 
-```
+```text
 pomelobot/
 ├── src/
 │   ├── index.ts                 # CLI 入口
@@ -122,72 +124,49 @@ pomelobot/
 │   ├── ios.ts                   # iOS WebSocket 入口
 │   ├── web.ts                   # Web UI + WebSocket 入口
 │   ├── server.ts                # 多渠道统一服务端入口
-│   ├── agent.ts                 # 主代理创建与工具注册
-│   ├── config.ts                # 配置加载与类型定义
-│   ├── llm.ts                   # 多模型管理（OpenAI / Anthropic）
-│   ├── mcp.ts                   # MCP 工具加载与连接管理
-│   ├── log/
-│   │   └── runtime.ts           # 运行时日志落盘（logs/*.log）
-│   ├── audit/
-│   │   └── logger.ts            # 命令执行审计日志
+│   ├── agent.ts                 # 主代理创建与系统提示词
+│   ├── conversation/
+│   │   └── runtime.ts           # 统一 Agent 生命周期与热重载
+│   ├── prompt/
+│   │   └── bootstrap.ts         # AGENTS / TOOLS / SOUL / HEARTBEAT 注入
+│   ├── skills/
+│   │   ├── manager.ts           # 技能安装 / 删除 / 列表
+│   │   ├── monitor.ts           # 技能目录监控与热重载触发
+│   │   └── slash.ts             # /skills /skill-install /skill-remove /skill-reload
 │   ├── commands/
-│   │   ├── commands.ts          # /new /compact /status /model 等斜杠命令
-│   │   └── index.ts
-│   ├── compaction/
-│   │   ├── compaction.ts        # 上下文压缩核心逻辑
-│   │   ├── summary.ts           # 摘要生成
-│   │   └── index.ts
-│   ├── cron/
-│   │   ├── tools.ts             # cron_job_* 工具定义
-│   │   ├── service.ts           # 调度服务
-│   │   ├── schedule.ts          # Cron 调度器
-│   │   ├── store.ts             # 任务持久化
-│   │   ├── runtime.ts           # 运行时管理
-│   │   └── types.ts
-│   ├── middleware/
-│   │   ├── memory.ts            # 记忆上下文加载
-│   │   ├── memory-flush.ts      # 记忆自动 flush
-│   │   └── index.ts
-│   ├── subagents/
-│   │   └── index.ts             # 子代理（skill-writer-agent）
-│   ├── tools/
-│   │   ├── exec.ts              # 命令执行核心
-│   │   ├── exec-policy.ts       # 白名单 / 黑名单策略与风险评估
-│   │   ├── command-parser.ts    # 命令解析
-│   │   └── index.ts
-│   └── channels/
-│       ├── context.ts           # 渠道无关会话上下文
-│       ├── gateway/
-│       │   ├── service.ts       # GatewayService（注册/分发/去重）
-│       │   └── types.ts         # ChannelAdapter/消息模型
-│       ├── dingtalk/
-│       │   ├── adapter.ts       # DingTalk ChannelAdapter
-│       │   ├── handler.ts       # 消息处理（文本 / 语音 / 图片 / 文件）
-│       │   ├── client.ts        # DingTalk Stream 客户端
-│       │   ├── approvals.ts     # 命令执行审批（文本 / 按钮模式）
-│       │   ├── context.ts       # 会话上下文管理
-│       │   └── types.ts
-│       ├── ios/
-│       │   ├── adapter.ts       # iOS WebSocket ChannelAdapter
-│       │   └── types.ts         # iOS 消息协议类型
-│       └── web/
-│           ├── adapter.ts       # Web ChannelAdapter + HTTP/WS server
-│           ├── ui.ts            # 内置 UI 页面
-│           └── types.ts         # Web 消息协议类型
+│   │   └── commands.ts          # CLI 斜杠命令（/new /compact /status /model ...）
+│   ├── channels/
+│   │   ├── dingtalk/            # DingTalk 适配层、审批、文件回传、会话管理
+│   │   ├── ios/                 # iOS WebSocket 适配层
+│   │   ├── web/                 # Web HTTP/WS、上传、文件回传、内置 UI
+│   │   └── gateway/             # 渠道网关抽象
+│   ├── middleware/              # Memory runtime、memory flush、scope 隔离
+│   ├── compaction/              # 上下文压缩与摘要
+│   ├── cron/                    # 定时任务工具、调度、持久化
+│   ├── tools/                   # exec_command 等工具实现
+│   ├── subagents/               # 子代理（skill-writer-agent）
+│   ├── config/                  # 配置 schema / defaults / loader
+│   ├── security/                # 凭据读取与脱敏
+│   ├── audit/                   # 审计日志
+│   ├── log/                     # 运行时日志
+│   ├── llm.ts                   # 多模型管理
+│   └── mcp.ts                   # MCP 工具加载与连接管理
 ├── workspace/
 │   ├── MEMORY.md                # 长期记忆
 │   ├── AGENTS.md                # 项目级执行规范（Prompt Bootstrap）
 │   ├── TOOLS.md                 # 工具使用约定（Prompt Bootstrap）
 │   ├── SOUL.md                  # 角色与风格定义（Prompt Bootstrap）
 │   ├── HEARTBEAT.md             # 纠错与复盘经验（Prompt Bootstrap）
-│   ├── memory/                  # 每日记忆目录
+│   ├── memory/                  # 每日记忆与 scope 隔离目录
 │   ├── skills/                  # 技能目录（每个技能含 SKILL.md）
-│   └── cron/                    # 定时任务存储与运行日志
+│   ├── cron/                    # 定时任务存储与运行日志
+│   └── tmp/                     # 渠道文件回传临时目录
 ├── template/
 │   └── dingtalk-card/           # DingTalk 消息卡片模板（可直接导入）
 ├── deploy/
 │   ├── Dockerfile               # 容器镜像构建
 │   ├── docker-compose.yaml      # 本地 PG 依赖部署（可选）
+│   ├── initdb/                  # PG 初始化脚本
 │   └── k8s/
 │       ├── deploy-all.yaml      # 应用部署清单（Deployment + PVC + Secret）
 │       └── sts.yaml             # PG StatefulSet 示例
@@ -369,13 +348,14 @@ MEMORY_PG_PASSWORD="xxx"
 
 ### Prompt Bootstrap（AGENTS / TOOLS / SOUL / HEARTBEAT）
 
-- 全局项目规范文件：`workspace/AGENTS.md`
-- 全局工具约定文件：`workspace/TOOLS.md`
-- 全局角色文件：`workspace/SOUL.md`
-- 全局纠错复盘文件：`workspace/HEARTBEAT.md`
+- `workspace/AGENTS.md`：项目协作规范；缺失时回退 `workspace/AGENT.md`
+- `workspace/TOOLS.md`：工具使用约定
+- `workspace/SOUL.md`：角色与风格定义
+- `workspace/HEARTBEAT.md`：纠错与复盘经验
 - scope 级覆盖：`workspace/memory/scopes/<scope>/{TOOLS.md,SOUL.md,HEARTBEAT.md}`（存在时优先）
+- `workspace/MEMORY.md` 不属于 Prompt Bootstrap；它是长期记忆文件，使用方式见 [Memory 机制说明](docs/memory.md)
 
-系统在每个会话 thread 首次调用时注入引导文件（默认常开、无需配置），并按以下优先级处理冲突：
+系统会在每个 `thread_id` 的首轮调用时注入引导文件；同一线程不会重复注入，修改文件后需进入新的 `thread_id` 才会重新生效。冲突处理优先级如下：
 
 1. 平台与运行时硬约束（审批、安全策略、工具白/黑名单）
 2. 系统提示词硬规则
@@ -384,6 +364,8 @@ MEMORY_PG_PASSWORD="xxx"
 5. `TOOLS.md`
 6. `SOUL.md`（scope 覆盖优先）
 7. `HEARTBEAT.md`（scope 覆盖优先）
+
+更细的职责划分、scope 覆盖细节和 `MEMORY.md` 的定位，见 [上下文文件与优先级](docs/context-files.md)。
 
 ### 命令执行
 
@@ -544,16 +526,26 @@ MEMORY_PG_PASSWORD="xxx"
 
 ## 斜杠命令
 
-在 CLI 交互模式下，支持以下命令：
+各渠道支持的斜杠命令并不完全一致，完整说明见 [命令与运行方式](docs/commands.md)。这里保留常用矩阵：
 
-| 命令 | 说明 |
-|------|------|
-| `/new` | 开始新会话（清空上下文，退出前自动 flush 记忆） |
-| `/compact [说明]` | 手动压缩上下文（可附加压缩重点说明） |
-| `/models` | 列出已配置的模型列表（含当前激活标记） |
-| `/model <别名>` | 热切换当前模型 |
-| `/status` | 显示会话状态（Token 用量、模型信息、上下文占比等） |
-| `/help` | 显示帮助信息 |
+| 命令 | CLI | DingTalk | Web | iOS |
+|------|-----|----------|-----|-----|
+| `/new` / `/reset` | ✅ | - | - | - |
+| `/compact [说明]` | ✅ | - | - | - |
+| `/models` / `/model <别名>` | ✅ | ✅ | ✅ | - |
+| `/status` | ✅ | ✅ | ✅ | - |
+| `/skills` | ✅ | ✅ | ✅ | ✅ |
+| `/skill-install <来源>` | ✅ | ✅ | ✅ | ✅ |
+| `/skill-remove <名称>` | ✅ | ✅ | ✅ | ✅ |
+| `/skill-reload` | ✅ | ✅ | ✅ | ✅ |
+| `/voice` / `/voice on|off` | - | ✅ | ⚠️ 提示不支持 | - |
+| `/help` / `/?` | ✅ | ✅ | ✅ | - |
+
+说明：
+- iOS 当前只接入了技能管理命令。
+- iOS 对非技能类 `/xxx` 输入当前不会统一拦截，会继续按普通对话处理。
+- Web 会对 `/voice` 返回“不支持”提示，不会静默无响应。
+- `/skill-install` 若目标目录同名，会先删除旧技能再覆盖安装。
 
 ## 使用示例
 
@@ -590,6 +582,12 @@ MEMORY_PG_PASSWORD="xxx"
 ```
 你: 帮我创建一个告警根因分析的技能
 助手: 已调用 skill-writer-agent 创建 workspace/skills/alert-rca/SKILL.md
+
+你: /skill-install openclaw/skills/prometheus-analyzer
+助手: ✅ 技能已安装：`prometheus-analyzer`
+      - 状态：新安装
+      - 目录：`prometheus-analyzer`
+      ✅ 技能索引已热重载。
 ```
 
 ### 命令执行（白名单 + 审批）
@@ -629,9 +627,10 @@ pnpm dingtalk
 - **多媒体处理**：图片自动视觉理解；文件尝试文本抽取；视频抽帧摘要（需安装 `ffmpeg`）
 - **文件回传**：优先通过 `dingtalk_write_tmp_file` / `dingtalk_send_file` 工具触发（稳定），文件统一落到 `workspace/tmp/`；同时兼容 `<dingtalk-file ...>` / `FILE_OUTPUT:` 文本标记（单文件 ≤ 10MB）
 - **定时推送**：通过 `cron_job_*` 工具管理定时任务，支持群聊 / 私聊推送
+- **技能管理**：支持 `/skills`、`/skill-install`、`/skill-remove`、`/skill-reload`，且安装/删除后立即热重载
 - **首轮记忆注入**：会话首轮自动注入今天/昨天 Markdown 摘要（受限额控制，不读取向量库）
 - **自动归档任务**：启动时幂等确保 04:00 的 daily memory_save 任务（可通过 `dingtalk.cron.autoMemorySaveAt4=false` 关闭）
-- **斜杠命令**：支持 `/status`、`/models`、`/model <alias>`、`/voice`、`/voice on|off`、`/help`、`/?`
+- **斜杠命令**：支持 `/status`、`/models`、`/model <alias>`、`/skills`、`/skill-install <source>`、`/skill-remove <name>`、`/skill-reload`、`/voice`、`/voice on|off`、`/help`、`/?`
 
 ### 所需权限
 
@@ -656,6 +655,12 @@ CHANNELS=ios pnpm run server
 - 服务端回复 `type=reply`，主动推送为 `type=proactive`
 - iOS 定时任务推送目标支持：`conversation:<id>` / `user:<id>` / `connection:<id>`
 
+### 功能支持
+
+- **技能命令**：支持 `/skills`、`/skill-install`、`/skill-remove`、`/skill-reload`
+- **技能热重载**：监听 `skills_dir` 目录变化，在下一轮请求前重建 Agent
+- **当前限制**：尚未接入 `/status`、`/models`、`/model`、`/help`、`/voice`
+
 ## Web UI 服务
 
 ```bash
@@ -676,6 +681,9 @@ CHANNELS=web pnpm run server
 - **附件回传**：Agent 可通过 `web_write_tmp_file / web_send_file` 生成并回传 `workspace/tmp` 下文件
 - **会话隔离**：按 `conversationId` 建立独立 thread，支持手动新开会话
 - **工具状态提示**：收到 `tool_start / tool_end` 时页面会显示当前工具状态
+- **斜杠命令**：支持 `/status`、`/models`、`/model <alias>`、`/skills`、`/skill-install <source>`、`/skill-remove <name>`、`/skill-reload`、`/help`、`/?`
+- **技能热重载**：安装/删除技能后立即重载；手工修改技能目录后会在下一轮请求前自动重载
+- **语音命令提示**：`/voice`、`/voice on`、`/voice off` 会明确提示“Web 渠道暂不支持”
 
 ### 对外 API 要点
 

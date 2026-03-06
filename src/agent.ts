@@ -95,6 +95,7 @@ export type AgentRuntimeChannel = 'cli' | 'dingtalk' | string;
 export interface CreateAgentOptions {
     execApprovalPrompt?: ExecApprovalPrompt;
     runtimeChannel?: AgentRuntimeChannel;
+    checkpointer?: MemorySaver;
 }
 
 function toSingleLineDescription(description: string | undefined): string {
@@ -417,7 +418,7 @@ export async function createSREAgent(
     const model = await createChatModel(cfg, { temperature: 0 });
 
     // Create checkpointer for conversation persistence
-    const checkpointer = new MemorySaver();
+    const checkpointer = options?.checkpointer || new MemorySaver();
 
     // Get subagents
     const subagents = getSubagents(cfg);

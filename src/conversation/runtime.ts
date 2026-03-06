@@ -6,6 +6,7 @@ import type {
     ExecApprovalPrompt,
     RuntimeAgent,
 } from '../agent.js';
+import { MemorySaver } from '@langchain/langgraph';
 import type { Config } from '../config.js';
 import {
     getActiveModelAlias,
@@ -36,8 +37,10 @@ export class ConversationRuntime {
     private readonly config: Config;
     private readonly runtimeChannel: AgentRuntimeChannel;
     private readonly execApprovalPrompt?: ExecApprovalPrompt;
+    private readonly checkpointer = new MemorySaver();
     private agentContext: AgentContext | null = null;
     private readonly bootstrappedThreads = new Set<string>();
+    private reloadRequested = false;
 
     constructor(options: ConversationRuntimeOptions) {
         this.config = options.config;
@@ -70,6 +73,29 @@ export class ConversationRuntime {
         await current.cleanup();
     }
 
+    requestReload(): void {
+        this.reloadRequested = true;
+    }
+
+    async reloadIfNeeded(): Promise<boolean> {
+        if (!this.reloadRequested) {
+            return false;
+        }
+        await this.reloadAgent();
+        return true;
+    }
+
+    async reloadAgent(): Promise<void> {
+        const previousContext = this.agentContext;
+        const nextContext = await this.createAgentContext();
+        this.agentContext = nextContext;
+        this.reloadRequested = false;
+
+        if (previousContext) {
+            await previousContext.cleanup();
+        }
+    }
+
     async switchModel(alias: string): Promise<SwitchModelResult> {
         const trimmedAlias = alias.trim();
         if (!trimmedAlias) {
@@ -94,6 +120,7 @@ export class ConversationRuntime {
             setActiveModelAlias(this.config, trimmedAlias);
             nextContext = await this.createAgentContext();
             this.agentContext = nextContext;
+            this.reloadRequested = false;
 
             if (previousContext) {
                 await previousContext.cleanup();
@@ -144,6 +171,7 @@ export class ConversationRuntime {
     private async createAgentContext(): Promise<AgentContext> {
         const createOptions: CreateAgentOptions = {
             runtimeChannel: this.runtimeChannel,
+            checkpointer: this.checkpointer,
         };
 
         if (this.execApprovalPrompt) {

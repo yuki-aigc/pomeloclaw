@@ -196,6 +196,10 @@ function handleHelpCommand(): CommandResult {
 /models - 列出已配置模型
 /model <别名> - 切换当前模型
 /status - 显示当前会话状态
+/skills - 列出当前已安装技能
+/skill-install <来源> - 远程或本地安装技能
+/skill-remove <名称> - 删除已安装技能
+/skill-reload - 重新加载技能索引
 /help - 显示此帮助信息
 
 **提示**: 当上下文过长时，系统会自动压缩。`;
