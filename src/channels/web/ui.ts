@@ -424,6 +424,72 @@ export function renderWebChatPage(config: WebConfig): string {
       gap: 10px;
       margin-top: 4px;
     }
+    .message-process {
+      margin-top: 8px;
+      border: 1px solid rgba(23, 49, 58, 0.12);
+      background: rgba(255, 255, 255, 0.58);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    .message-process summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--muted);
+      user-select: none;
+    }
+    .message-process summary::-webkit-details-marker {
+      display: none;
+    }
+    .message-process-summary-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .message-process-summary-title::before {
+      content: "▸";
+      color: var(--accent-2);
+      transition: transform .18s ease;
+    }
+    .message-process[open] .message-process-summary-title::before {
+      transform: rotate(90deg);
+    }
+    .message-process-summary-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .message-process-body {
+      display: grid;
+      gap: 10px;
+      padding: 0 14px 14px;
+      border-top: 1px solid rgba(23, 49, 58, 0.08);
+    }
+    .message-process-text {
+      padding-top: 12px;
+      white-space: pre-wrap;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.68;
+    }
+    .message-process-steps {
+      display: grid;
+      gap: 8px;
+    }
+    .message-process-step {
+      padding: 9px 11px;
+      border-radius: 12px;
+      background: rgba(13, 125, 116, 0.08);
+      color: #20494a;
+      font-size: 13px;
+      line-height: 1.55;
+    }
     .attachment-card {
       display: flex;
       align-items: center;
@@ -658,7 +724,7 @@ export function renderWebChatPage(config: WebConfig): string {
       <header class="chat-header">
         <div class="chat-title">
           <h2>实时对话</h2>
-          <p>流式事件：<code>reply_start</code> / <code>reply_delta</code> / <code>reply_final</code></p>
+          <p>流式事件：<code>reply_start</code> / <code>process_*</code> / <code>reply_final</code></p>
         </div>
         <div class="tool-chip hidden" id="tool-chip">正在调用工具</div>
       </header>
@@ -666,7 +732,7 @@ export function renderWebChatPage(config: WebConfig): string {
       <section class="messages" id="messages">
         <div class="empty-state" id="empty-state">
           <h3>把浏览器变成一个正式渠道</h3>
-          <p>输入问题后，页面会通过 WebSocket 直接接收 Agent 的增量输出。最终完成时，服务端会补发一条 <code>reply_final</code> 做收尾校正。</p>
+          <p>输入问题后，页面会通过 WebSocket 直接接收 Agent 的执行过程事件。最终完成时，服务端会补发一条 <code>reply_final</code> 做收尾校正。</p>
         </div>
       </section>
 
@@ -1231,6 +1297,8 @@ export function renderWebChatPage(config: WebConfig): string {
           attachments: attachments,
           rawText: '',
           rich: Boolean(options && options.rich),
+          hasProcess: false,
+          process: null,
         };
 
         updateMessage(record, initialText || '', (options && options.attachments) || []);
@@ -1261,10 +1329,139 @@ export function renderWebChatPage(config: WebConfig): string {
         return record;
       }
 
-      function finalizeReply(sourceMessageId, text, attachments) {
+      function ensureProcessPanel(record, payload) {
+        if (record.process) {
+          if (payload && payload.title && record.process.summaryTitle.textContent !== payload.title) {
+            record.process.summaryTitle.textContent = payload.title;
+          }
+          return record.process;
+        }
+
+        const details = document.createElement('details');
+        details.className = 'message-process';
+
+        const summary = document.createElement('summary');
+        const summaryTitle = document.createElement('span');
+        summaryTitle.className = 'message-process-summary-title';
+        summaryTitle.textContent = (payload && payload.title) || '执行过程';
+
+        const summaryMeta = document.createElement('span');
+        summaryMeta.className = 'message-process-summary-meta';
+        summaryMeta.textContent = (payload && payload.summary) || '进行中';
+
+        summary.append(summaryTitle, summaryMeta);
+
+        const body = document.createElement('div');
+        body.className = 'message-process-body';
+
+        const text = document.createElement('div');
+        text.className = 'message-process-text hidden';
+
+        const steps = document.createElement('div');
+        steps.className = 'message-process-steps hidden';
+
+        body.append(text, steps);
+        details.append(summary, body);
+        record.wrap.insertBefore(details, record.attachments);
+
+        record.process = {
+          details: details,
+          summaryTitle: summaryTitle,
+          summaryMeta: summaryMeta,
+          text: text,
+          steps: steps,
+        };
+        record.hasProcess = true;
+        return record.process;
+      }
+
+      function renderProcessStepLine(step) {
+        const toolName = step.tool_name || step.toolName || 'unknown';
+        const preview = step.preview || step.summary || '';
+        const prefix = step.step_type === 'tool_end' ? '工具完成' : '开始调用工具';
+        return preview ? (prefix + '：' + toolName + ' · ' + preview) : (prefix + '：' + toolName);
+      }
+
+      function startProcess(sourceMessageId, payload) {
+        const record = ensureReplyBubble(sourceMessageId);
+        const process = ensureProcessPanel(record, payload || {});
+        process.summaryMeta.textContent = (payload && payload.summary) || '进行中';
+        return record;
+      }
+
+      function appendProcessDelta(sourceMessageId, payload) {
+        const record = startProcess(sourceMessageId, payload);
+        const process = ensureProcessPanel(record, payload);
+        const delta = payload && payload.delta ? String(payload.delta) : '';
+        if (!delta) {
+          return;
+        }
+        process.text.classList.remove('hidden');
+        process.text.textContent = (process.text.textContent || '') + delta;
+        process.summaryMeta.textContent = '进行中';
+        scrollMessages();
+      }
+
+      function appendProcessStep(sourceMessageId, payload) {
+        const record = startProcess(sourceMessageId, payload);
+        const process = ensureProcessPanel(record, payload);
+        const line = renderProcessStepLine(payload || {});
+        const step = document.createElement('div');
+        step.className = 'message-process-step';
+        step.textContent = line;
+        process.steps.classList.remove('hidden');
+        process.steps.appendChild(step);
+        process.summaryMeta.textContent = '进行中';
+        scrollMessages();
+      }
+
+      function finalizeProcess(record, payload) {
+        if (!payload || !Array.isArray(payload.blocks) || payload.blocks.length === 0) {
+          return;
+        }
+        const process = ensureProcessPanel(record, payload);
+        process.summaryTitle.textContent = payload.title || '执行过程';
+        process.summaryMeta.textContent = payload.summary || '执行完成';
+        process.text.textContent = '';
+        process.steps.innerHTML = '';
+
+        if (payload.text) {
+          process.text.classList.remove('hidden');
+          process.text.textContent = payload.text;
+        } else {
+          process.text.classList.add('hidden');
+        }
+
+        let hasToolSteps = false;
+        payload.blocks.forEach(function(block) {
+          if (!block || block.type !== 'tool') {
+            return;
+          }
+          hasToolSteps = true;
+          const step = document.createElement('div');
+          step.className = 'message-process-step';
+          step.textContent = renderProcessStepLine({
+            step_type: block.phase === 'end' ? 'tool_end' : 'tool_start',
+            tool_name: block.toolName,
+            preview: block.preview,
+          });
+          process.steps.appendChild(step);
+        });
+
+        if (hasToolSteps) {
+          process.steps.classList.remove('hidden');
+        } else {
+          process.steps.classList.add('hidden');
+        }
+      }
+
+      function finalizeReply(sourceMessageId, text, attachments, processPayload) {
         const record = ensureReplyBubble(sourceMessageId);
         record.body.dataset.streaming = 'false';
         updateMessage(record, text || '已处理，但没有可返回的文本结果。', attachments || []);
+        if (processPayload) {
+          finalizeProcess(record, processPayload);
+        }
         state.pendingReplies.delete(sourceMessageId);
         state.isBusy = false;
         syncComposerState();
@@ -1377,8 +1574,20 @@ export function renderWebChatPage(config: WebConfig): string {
             case 'reply_start':
               ensureReplyBubble(payload.sourceMessageId);
               break;
+            case 'process_start':
+              startProcess(payload.sourceMessageId, payload);
+              break;
+            case 'process_delta':
+              appendProcessDelta(payload.sourceMessageId, payload);
+              break;
+            case 'process_step':
+              appendProcessStep(payload.sourceMessageId, payload);
+              break;
             case 'reply_delta': {
               const record = ensureReplyBubble(payload.sourceMessageId);
+              if (record.hasProcess) {
+                break;
+              }
               record.body.dataset.streaming = 'true';
               updateMessage(record, record.rawText + (payload.delta || ''), []);
               scrollMessages();
@@ -1386,11 +1595,11 @@ export function renderWebChatPage(config: WebConfig): string {
             }
             case 'reply_final':
               setToolChip('');
-              finalizeReply(payload.sourceMessageId, payload.text || '', payload.attachments || []);
+              finalizeReply(payload.sourceMessageId, payload.text || '', payload.attachments || [], payload.process || null);
               break;
             case 'reply_error':
               setToolChip('');
-              finalizeReply(payload.sourceMessageId, '请求处理失败：' + (payload.message || '未知错误'), []);
+              finalizeReply(payload.sourceMessageId, '请求处理失败：' + (payload.message || '未知错误'), [], payload.process || null);
               break;
             case 'reply':
               finalizeReply(payload.messageId || randomId('reply'), payload.text || '', payload.attachments || []);

@@ -24,7 +24,7 @@
         "title": "SREBot 定时任务"
       },
       "state": {
-        "nextRunAtMs": 1772827200000,
+        "nextRunAtMs": 1773086400000,
         "lastRunAtMs": 1772740814434,
         "lastStatus": "error",
         "lastError": "Request failed with status code 400",

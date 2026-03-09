@@ -266,7 +266,9 @@ ws://<host>:18081/ws/web
 4. 服务端返回正式 `hello_ack`
 5. 客户端发送 `message`
 6. 服务端返回 `dispatch_ack`
-7. 服务端流式返回 `reply_start / reply_delta / reply_final`
+7. 服务端返回 `reply_start`
+8. 如存在过程信息，服务端继续返回 `process_start / process_delta / process_step`
+9. 服务端最终返回 `reply_final`
 
 ### 4.3 客户端 -> 服务端事件
 
@@ -405,6 +407,70 @@ ws://<host>:18081/ws/web
 }
 ```
 
+#### `process_start`
+
+```json
+{
+  "type": "process_start",
+  "request_id": "msg_001",
+  "session_id": "wsn_xxx",
+  "sourceMessageId": "msg_001",
+  "title": "执行过程",
+  "default_collapsed": true,
+  "timestamp": 1772580000250
+}
+```
+
+用途：
+
+- 前端应把它渲染成一个默认折叠的“小过程窗口”
+- 标题建议直接使用 `title`
+
+#### `process_delta`
+
+```json
+{
+  "type": "process_delta",
+  "request_id": "msg_001",
+  "session_id": "wsn_xxx",
+  "sourceMessageId": "msg_001",
+  "block_type": "commentary",
+  "delta": "首先让我读取 skill 的完整说明。",
+  "timestamp": 1772580000300
+}
+```
+
+用途：
+
+- 表示“执行过程文本”的增量更新
+- 推荐追加到折叠过程窗口中，而不是主回答正文
+
+#### `process_step`
+
+```json
+{
+  "type": "process_step",
+  "request_id": "msg_001",
+  "session_id": "wsn_xxx",
+  "sourceMessageId": "msg_001",
+  "step_type": "tool_start",
+  "tool_name": "read_skill",
+  "preview": "读取 SKILL.md",
+  "timestamp": 1772580000400
+}
+```
+
+字段说明：
+
+- `step_type`：当前为 `tool_start` / `tool_end`
+- `tool_name`：工具名
+- `preview`：可选，服务端提取的短摘要
+
+用途：
+
+- 前端可把它渲染成“步骤列表”或“时间线”
+- 推荐展示在折叠过程窗口中
+
 #### `reply_delta`
 
 ```json
@@ -417,6 +483,12 @@ ws://<host>:18081/ws/web
 }
 ```
 
+说明：
+
+- `reply_delta` 现在是“正文增量”的兼容事件
+- 当服务端需要先归集执行过程时，`reply_delta` 可能为空缺或明显减少
+- 新前端不要依赖 `reply_delta` 作为唯一渲染来源；应以 `reply_final.text` 为最终正文
+
 #### `reply_final`
 
 ```json
@@ -425,6 +497,24 @@ ws://<host>:18081/ws/web
   "request_id": "msg_001",
   "session_id": "wsn_xxx",
   "text": "今天处理了 3 个告警，剩余 1 个待跟进。",
+  "process": {
+    "title": "执行过程",
+    "default_collapsed": true,
+    "summary": "已记录 2 段过程文本，涉及 2 个工具：read_skill, exec_command",
+    "text": "首先让我读取 skill。\n\n开始调用工具 read_skill\n\n工具执行完成 read_skill：已获取 skill 工作流",
+    "blocks": [
+      {
+        "type": "commentary",
+        "text": "首先让我读取 skill。"
+      },
+      {
+        "type": "tool",
+        "phase": "start",
+        "toolName": "read_skill",
+        "preview": "读取 SKILL.md"
+      }
+    ]
+  },
   "attachments": [],
   "finishReason": "completed",
   "timestamp": 1772580000800
@@ -435,7 +525,9 @@ ws://<host>:18081/ws/web
 
 - `reply_delta` 用于实时打印
 - `reply_final` 用于最终收敛和附件列表
-- 建议以前端本地累积 `reply_delta`，最后用 `reply_final.text` 覆盖校正
+- `reply_final.text` 是最终正文，必须优先使用
+- `reply_final.process` 是完整的过程快照，前端应用它来校正本地累积的 `process_*` 状态
+- 建议以前端本地累积 `process_delta / process_step`，最后用 `reply_final.process` 覆盖校正
 
 #### `tool_start` / `tool_end`
 
@@ -458,6 +550,12 @@ ws://<host>:18081/ws/web
   "timestamp": 1772580000500
 }
 ```
+
+说明：
+
+- 这两个事件为兼容保留
+- 新前端应优先使用 `process_step`
+- 如果你的前端已经接了 `tool_start` / `tool_end`，可以继续使用，但建议逐步迁移到 `process_step`
 
 #### `reply_error`
 
@@ -503,6 +601,16 @@ ws://<host>:18081/ws/web
 - `idempotency_key`
 
 ## 6. 推荐接入策略
+
+### 过程窗口渲染建议
+
+推荐前端渲染方式：
+
+1. 主消息正文只展示 `reply_final.text`
+2. 折叠过程窗口展示 `process_start / process_delta / process_step`
+3. 收到 `reply_final.process` 后，用它覆盖本地过程状态，避免增量丢失或重复
+
+这样可以避免把“执行过程文本”直接混到主回答里。
 
 ### 方案 A：最简接入
 

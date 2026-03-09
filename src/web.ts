@@ -38,6 +38,12 @@ import {
     pickBestUserFacingResponse,
     sanitizeUserFacingText,
 } from './channels/streaming.js';
+import {
+    appendProcessCommentaryBlock,
+    buildProcessPayload,
+    extractProcessPreview,
+    type WebProcessBlock,
+} from './channels/web/process.js';
 import type { RuntimeLogWriter } from './log/runtime.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand, parseSkillSlashCommand } from './skills/index.js';
 
@@ -656,10 +662,81 @@ export async function startWebService(options?: {
 
                 let rawStreamResponse = '';
                 let visibleStreamResponse = '';
+                let processVisibleResponse = '';
                 let fullResponse = '';
                 let finalOutputFromEvents = '';
                 let sawToolCall = false;
+                let processStarted = false;
+                const processBlocks: WebProcessBlock[] = [];
                 let attachments = [];
+
+                const buildProcessEventBase = () => ({
+                    sourceMessageId: message.messageId,
+                    request_id: message.messageId,
+                    conversationId: message.conversationId,
+                    session_id: message.conversationId,
+                });
+
+                const emitProcessStart = async () => {
+                    if (processStarted) {
+                        return;
+                    }
+                    processStarted = true;
+                    await adapter.sendStreamEvent({
+                        inbound: message,
+                        payload: {
+                            type: 'process_start',
+                            ...buildProcessEventBase(),
+                            title: '执行过程',
+                            default_collapsed: true,
+                            timestamp: Date.now(),
+                        },
+                    });
+                };
+
+                const emitProcessDelta = async (delta: string) => {
+                    if (!delta.trim()) {
+                        return;
+                    }
+                    await emitProcessStart();
+                    appendProcessCommentaryBlock(processBlocks, delta);
+                    await adapter.sendStreamEvent({
+                        inbound: message,
+                        payload: {
+                            type: 'process_delta',
+                            ...buildProcessEventBase(),
+                            block_type: 'commentary',
+                            delta,
+                            timestamp: Date.now(),
+                        },
+                    });
+                };
+
+                const emitProcessToolStep = async (
+                    phase: 'start' | 'end',
+                    toolName: string | undefined,
+                    preview: string | undefined,
+                ) => {
+                    const normalizedToolName = toolName?.trim() || 'unknown';
+                    await emitProcessStart();
+                    processBlocks.push({
+                        type: 'tool',
+                        phase,
+                        toolName: normalizedToolName,
+                        preview,
+                    });
+                    await adapter.sendStreamEvent({
+                        inbound: message,
+                        payload: {
+                            type: 'process_step',
+                            ...buildProcessEventBase(),
+                            step_type: phase === 'start' ? 'tool_start' : 'tool_end',
+                            tool_name: normalizedToolName,
+                            preview,
+                            timestamp: Date.now(),
+                        },
+                    });
+                };
 
                 try {
                     const eventStream = currentAgent.streamEvents(
@@ -679,43 +756,43 @@ export async function startWebService(options?: {
                             }
                             rawStreamResponse += delta;
                             const sanitizedCandidate = sanitizeUserFacingText(rawStreamResponse);
-                            let deltaToSend = '';
-                            if (!visibleStreamResponse && sanitizedCandidate) {
-                                deltaToSend = sanitizedCandidate;
-                                visibleStreamResponse = sanitizedCandidate;
-                            } else if (sanitizedCandidate.startsWith(visibleStreamResponse)) {
-                                deltaToSend = sanitizedCandidate.slice(visibleStreamResponse.length);
-                                visibleStreamResponse = sanitizedCandidate;
-                            }
-                            if (!deltaToSend) {
+                            if (!sanitizedCandidate) {
                                 continue;
                             }
-                            await adapter.sendStreamEvent({
-                                inbound: message,
-                                payload: {
-                                    type: 'reply_delta',
-                                    sourceMessageId: message.messageId,
-                                    request_id: message.messageId,
-                                    conversationId: message.conversationId,
-                                    session_id: message.conversationId,
-                                    delta: deltaToSend,
-                                    timestamp: Date.now(),
-                                },
-                            });
+                            visibleStreamResponse = sanitizedCandidate;
+                            if (!sawToolCall) {
+                                continue;
+                            }
+
+                            let deltaToProcess = '';
+                            if (!processVisibleResponse) {
+                                deltaToProcess = sanitizedCandidate;
+                                processVisibleResponse = sanitizedCandidate;
+                            } else if (sanitizedCandidate.startsWith(processVisibleResponse)) {
+                                deltaToProcess = sanitizedCandidate.slice(processVisibleResponse.length);
+                                processVisibleResponse = sanitizedCandidate;
+                            }
+                            if (deltaToProcess) {
+                                await emitProcessDelta(deltaToProcess);
+                            }
                             continue;
                         }
 
                         if (event.event === 'on_tool_start') {
                             sawToolCall = true;
+                            if (visibleStreamResponse && !processVisibleResponse) {
+                                processVisibleResponse = visibleStreamResponse;
+                                await emitProcessDelta(visibleStreamResponse);
+                            }
+                            const preview = extractProcessPreview(event.data);
+                            await emitProcessToolStep('start', event.name, preview);
                             await adapter.sendStreamEvent({
                                 inbound: message,
                                 payload: {
                                     type: 'tool_start',
-                                    sourceMessageId: message.messageId,
-                                    request_id: message.messageId,
-                                    conversationId: message.conversationId,
-                                    session_id: message.conversationId,
+                                    ...buildProcessEventBase(),
                                     toolName: event.name,
+                                    summary: preview,
                                     timestamp: Date.now(),
                                 },
                             });
@@ -723,15 +800,15 @@ export async function startWebService(options?: {
                         }
 
                         if (event.event === 'on_tool_end') {
+                            const preview = extractProcessPreview(event.data);
+                            await emitProcessToolStep('end', event.name, preview);
                             await adapter.sendStreamEvent({
                                 inbound: message,
                                 payload: {
                                     type: 'tool_end',
-                                    sourceMessageId: message.messageId,
-                                    request_id: message.messageId,
-                                    conversationId: message.conversationId,
-                                    session_id: message.conversationId,
+                                    ...buildProcessEventBase(),
                                     toolName: event.name,
+                                    summary: preview,
                                     timestamp: Date.now(),
                                 },
                             });
@@ -775,16 +852,16 @@ export async function startWebService(options?: {
                         fullResponse = '已处理，但没有可返回的文本结果。';
                     }
 
+                    const processPayload = buildProcessPayload(processBlocks);
+
                     await adapter.sendStreamEvent({
                         inbound: message,
                         payload: {
                             type: 'reply_final',
-                            sourceMessageId: message.messageId,
-                            request_id: message.messageId,
-                            conversationId: message.conversationId,
-                            session_id: message.conversationId,
+                            ...buildProcessEventBase(),
                             text: fullResponse,
                             attachments,
+                            process: processPayload,
                             finishReason: 'completed',
                             timestamp: Date.now(),
                         },
@@ -827,15 +904,14 @@ export async function startWebService(options?: {
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
                     log.warn(`[Web] stream failed (${message.conversationId}): ${reason}`);
+                    const processPayload = buildProcessPayload(processBlocks);
                     await adapter.sendStreamEvent({
                         inbound: message,
                         payload: {
                             type: 'reply_error',
-                            sourceMessageId: message.messageId,
-                            request_id: message.messageId,
-                            conversationId: message.conversationId,
-                            session_id: message.conversationId,
+                            ...buildProcessEventBase(),
                             message: reason,
+                            process: processPayload,
                             timestamp: Date.now(),
                         },
                     });
