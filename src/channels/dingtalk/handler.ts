@@ -67,6 +67,7 @@ import { resolveMemoryScope, type MemoryScope } from '../../middleware/memory-sc
 import { DingTalkSessionStore, createSessionThreadId } from './session-store.js';
 import { buildPromptBootstrapMessage } from '../../prompt/bootstrap.js';
 import { executeSkillSlashCommand } from '../../skills/index.js';
+import { executeCronSlashCommand } from '../../cron/slash.js';
 
 // Session state cache (scopeKey -> SessionState)
 const sessionCache = new Map<string, SessionState>();
@@ -1605,6 +1606,7 @@ function buildHelpMessage(currentModelAlias: string): string {
         '## 命令帮助',
         '',
         '- `/status` 查看当前会话状态',
+        '- `/cron` 查看所有渠道的定时任务详情',
         '- `/models` 查看可用模型列表',
         '- `/model <别名>` 切换模型（例如 `/model qwen`）',
         '- `/skills` 查看已安装技能',
@@ -1680,6 +1682,18 @@ async function tryHandleSlashCommand(params: {
             );
             return true;
         }
+    }
+
+    const cronCommand = await executeCronSlashCommand(params.text);
+    if (cronCommand.handled) {
+        await sendBySession(
+            params.ctx.dingtalkConfig,
+            params.sessionWebhook,
+            cronCommand.response || '已处理定时任务命令。',
+            mention,
+            params.ctx.log
+        );
+        return true;
     }
 
     const parsed = parseSlashCommand(params.text);

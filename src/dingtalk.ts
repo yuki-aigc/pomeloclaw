@@ -26,6 +26,7 @@ import {
 } from './channels/dingtalk/index.js';
 import { sendProactiveMessage } from './channels/dingtalk/client.js';
 import { createDingTalkChannelAdapter } from './channels/dingtalk/adapter.js';
+import { withDingTalkConversationContext, type DingTalkConversationContext } from './channels/dingtalk/context.js';
 import { requestDingTalkExecApproval, withApprovalContext } from './channels/dingtalk/approvals.js';
 import { GatewayService } from './channels/gateway/index.js';
 import { CronService } from './cron/service.js';
@@ -41,6 +42,7 @@ import {
     toGatewayLogger,
 } from './channels/runtime-entry.js';
 import { createSkillDirectoryMonitor } from './skills/index.js';
+import { resolveMemoryScope } from './middleware/memory-scope.js';
 
 const AUTO_MEMORY_SAVE_JOB_NAME = '系统任务：每日记忆归档(04:00)';
 const AUTO_MEMORY_SAVE_JOB_MARKER = '[system:auto-memory-save-4am:v1]';
@@ -56,15 +58,47 @@ export function buildAutoMemorySaveJobPrompt(): string {
     return [
         '请执行每日记忆归档任务。',
         '要求：',
-        '1. 回顾最近24小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。',
-        '2. 输出内容必须使用以下固定结构；没有信息时写“无”：',
+        '1. 先调用 memory_search，检索“最近24小时 / 今天 / 昨天”相关的记忆与会话事件。',
+        '2. 再回顾最近24小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。',
+        '3. 输出内容必须使用以下固定结构；没有信息时写“无”：',
         WORKING_SUMMARY_SCHEMA,
-        '3. 输出内容必须满足以下要求：',
+        '4. 输出内容必须满足以下要求：',
         ...WORKING_SUMMARY_REQUIREMENTS.map((item, index) => `   ${index + 1}) ${item}`),
-        '4. 调用 memory_save，target 必须是 daily；content 直接填写上面的结构化摘要正文，不要包“对话摘要:”前缀。',
-        '5. 完成后在回复末尾明确输出: memory_saved。',
-        '注意：若你没有调用 memory_save 就结束任务，视为失败。',
+        '5. 调用 memory_save，target 必须是 daily；content 直接填写上面的结构化摘要正文，不要包“对话摘要:”前缀。',
+        '6. 在 daily 归档完成后，检查本次总结里是否存在可跨会话复用的团队知识，例如：标准流程、稳定约束、通用排障经验、明确结论、团队共识。',
+        '7. 如果存在上述可复用知识，再调用 memory_save_team：',
+        '   - 优先使用 target="long-term"',
+        '   - 使用结构化字段填写：title / summary / applicability / steps / constraints / evidence / tags',
+        '   - summary 只保留可复用知识本身，不要整段复制 daily 摘要',
+        '   - reason 简洁写明晋升原因，例如“标准流程”/“通用排障经验”/“团队共识”',
+        '8. 若没有足够稳定、可复用的团队知识，则跳过 memory_save_team，不要为了调用而调用。',
+        '9. 完成后在回复末尾明确输出: memory_saved。',
+        '注意：若你没有先调用 memory_save 就结束任务，视为失败。',
     ].join('\n');
+}
+
+export function resolveDingTalkCronConversationContext(target: string): DingTalkConversationContext {
+    const normalized = target.trim();
+    const isGroupConversation = /^cid/i.test(normalized);
+    if (isGroupConversation) {
+        return {
+            conversationId: normalized,
+            isDirect: false,
+            senderId: 'cron',
+            senderName: 'Cron',
+            sessionWebhook: '',
+            pendingReplyFiles: [],
+        };
+    }
+
+    return {
+        conversationId: normalized,
+        isDirect: true,
+        senderId: normalized,
+        senderName: 'Cron',
+        sessionWebhook: '',
+        pendingReplyFiles: [],
+    };
 }
 
 function buildPgClientConfig(memoryConfig: AgentMemoryConfig): PgClientConfig | null {
@@ -657,13 +691,21 @@ export async function startDingTalkService(options?: {
         execApprovalPrompt,
     });
     await conversationRuntime.initialize();
+    const cronConversationRuntime = new ConversationRuntime({
+        config,
+        runtimeChannel: 'dingtalk',
+        execApprovalPrompt,
+    });
+    await cronConversationRuntime.initialize();
     let currentAgent = conversationRuntime.getAgent();
+    let cronAgent = cronConversationRuntime.getAgent();
     log.info('[DingTalk] Agent initialized successfully');
     const skillMonitor = createSkillDirectoryMonitor({
         skillsDir: skillsPath,
         logger: log,
         onChange: () => {
             conversationRuntime.requestReload();
+            cronConversationRuntime.requestReload();
             log.info('[DingTalk] Skills changed on disk, reload scheduled for next request.');
         },
     });
@@ -689,12 +731,16 @@ export async function startDingTalkService(options?: {
         switchModel: async (alias: string) => {
             const result = await conversationRuntime.switchModel(alias);
             currentAgent = conversationRuntime.getAgent();
+            await cronConversationRuntime.reloadAgent();
+            cronAgent = cronConversationRuntime.getAgent();
             ctx.agent = currentAgent;
             return result;
         },
         reloadAgent: async () => {
             await conversationRuntime.reloadAgent();
             currentAgent = conversationRuntime.getAgent();
+            await cronConversationRuntime.reloadAgent();
+            cronAgent = cronConversationRuntime.getAgent();
             ctx.agent = currentAgent;
         },
         reloadIfNeeded: async () => {
@@ -736,27 +782,36 @@ export async function startDingTalkService(options?: {
                 };
             }
 
-            await conversationRuntime.reloadIfNeeded();
-            currentAgent = conversationRuntime.getAgent();
-            ctx.agent = currentAgent;
+            await cronConversationRuntime.reloadIfNeeded();
+            cronAgent = cronConversationRuntime.getAgent();
 
-            const threadId = `cron-${job.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-            const cronMessages = await conversationRuntime.buildBootstrapMessages({
-                threadId,
-                workspacePath: memoryWorkspacePath,
-                scopeKey: 'main',
-            });
-            cronMessages.push({
-                role: 'user',
-                content: `[定时任务 ${job.name}] ${job.payload.message}`,
-            });
-            const invokeResult = await currentAgent.invoke(
+            const conversationContext = resolveDingTalkCronConversationContext(target);
+            const invokeResult = await withDingTalkConversationContext(
                 {
-                    messages: cronMessages,
+                    ...conversationContext,
+                    workspaceRoot: memoryWorkspacePath,
                 },
-                {
-                    configurable: { thread_id: threadId },
-                    recursionLimit: config.agent.recursion_limit,
+                async () => {
+                    const scope = resolveMemoryScope(config.agent.memory.session_isolation);
+                    const threadId = `cron-${scope.key}-${job.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+                    const cronMessages = await cronConversationRuntime.buildBootstrapMessages({
+                        threadId,
+                        workspacePath: memoryWorkspacePath,
+                        scopeKey: scope.key,
+                    });
+                    cronMessages.push({
+                        role: 'user',
+                        content: `[定时任务 ${job.name}] ${job.payload.message}`,
+                    });
+                    return cronAgent.invoke(
+                        {
+                            messages: cronMessages,
+                        },
+                        {
+                            configurable: { thread_id: threadId },
+                            recursionLimit: config.agent.recursion_limit,
+                        }
+                    );
                 }
             );
 
@@ -948,6 +1003,11 @@ export async function startDingTalkService(options?: {
             await conversationRuntime.close();
         } catch (error) {
             log.warn('[DingTalk] MCP cleanup failed:', error instanceof Error ? error.message : String(error));
+        }
+        try {
+            await cronConversationRuntime.close();
+        } catch (error) {
+            log.warn('[DingTalk] cron runtime cleanup failed:', error instanceof Error ? error.message : String(error));
         }
 
         console.log(`${colors.gray}Goodbye! 👋${colors.reset}`);

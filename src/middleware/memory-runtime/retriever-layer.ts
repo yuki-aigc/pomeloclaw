@@ -46,7 +46,10 @@ export interface MemoryRetrieverLayerDeps {
     searchFromFiles: (query: string, scope: MemoryScope) => Promise<MemoryRetrieverSearchHit[]>;
     searchPgKeywordUnified: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
     searchPgFtsUnified: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
+    searchPgKeywordChunks: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
+    searchPgFtsChunks: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
     searchPgVector: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
+    searchPgVectorChunks: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
     searchPgSessionEventsFts: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
     searchPgSessionEventsVector: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
     searchPgSessionEventsTemporal: (query: string, scopeKey: string, limit: number) => Promise<SearchRow[]>;
@@ -80,6 +83,17 @@ function normalizeRankScore(value: number): number {
     return value / (1 + value);
 }
 
+function isSharedMainMemoryPath(path: string): boolean {
+    const normalized = path.replace(/\\/g, '/');
+    if (normalized === 'MEMORY.md' || normalized === 'HEARTBEAT.md') {
+        return true;
+    }
+    if (/^memory\/[^/]+\.md$/u.test(normalized)) {
+        return true;
+    }
+    return normalized === 'memory/scopes/main/HEARTBEAT.md';
+}
+
 export class MemoryRetrieverLayer {
     constructor(private readonly deps: MemoryRetrieverLayerDeps) {}
 
@@ -106,6 +120,23 @@ export class MemoryRetrieverLayer {
             return hits;
         };
         const fileKeywordFallback = async () => await this.deps.searchFromFiles(query, scope);
+        const sharedMainReadsEnabled = this.deps.memoryConfig.session_isolation.shared_main_scope_reads && scope.key !== 'main';
+        const sharedMainSearchLimit = (limit: number) => Math.max(limit * 3, limit + 8);
+        const getSharedMainKeywordRows = async (limit: number) =>
+            sharedMainReadsEnabled
+                ? (await this.deps.searchPgKeywordChunks(query, 'main', sharedMainSearchLimit(limit)))
+                    .filter((row) => isSharedMainMemoryPath(row.rel_path))
+                : [];
+        const getSharedMainFtsRows = async (limit: number) =>
+            sharedMainReadsEnabled
+                ? (await this.deps.searchPgFtsChunks(query, 'main', sharedMainSearchLimit(limit)))
+                    .filter((row) => isSharedMainMemoryPath(row.rel_path))
+                : [];
+        const getSharedMainVectorRows = async (limit: number) =>
+            sharedMainReadsEnabled
+                ? (await this.deps.searchPgVectorChunks(query, 'main', sharedMainSearchLimit(limit)))
+                    .filter((row) => isSharedMainMemoryPath(row.rel_path))
+                : [];
 
         if (this.deps.memoryConfig.backend !== 'pgsql' || !this.deps.canUsePg()) {
             const hits = await fileKeywordFallback();
@@ -117,20 +148,26 @@ export class MemoryRetrieverLayer {
         const maxResults = this.deps.memoryConfig.retrieval.max_results;
         const minScore = this.deps.memoryConfig.retrieval.min_score;
         const keywordFallback = async (fallbackFrom: string) => {
-            const rows = await this.deps.searchPgKeywordUnified(query, scope.key, maxResults);
+            const [currentRows, sharedMainRows] = await Promise.all([
+                this.deps.searchPgKeywordUnified(query, scope.key, maxResults),
+                getSharedMainKeywordRows(maxResults),
+            ]);
+            const rows = this.deps.mergeRows([...currentRows, ...sharedMainRows], maxResults);
             if (rows.length > 0) {
                 const hits = rows
                     .map((row) => this.deps.rowToHit(row, 'keyword'))
                     .filter((item) => item.score >= minScore)
                     .slice(0, maxResults);
                 return finish(hits, `${fallbackFrom}_keyword`, {
-                    keywordRows: rows.length,
+                    keywordRows: currentRows.length,
+                    sharedMainKeywordRows: sharedMainRows.length,
                     keywordHits: hits.length,
                 });
             }
             const fileHits = await fileKeywordFallback();
             return finish(fileHits, `${fallbackFrom}_file_keyword`, {
-                keywordRows: rows.length,
+                keywordRows: currentRows.length,
+                sharedMainKeywordRows: sharedMainRows.length,
                 fileHits: fileHits.length,
             });
         };
@@ -140,7 +177,11 @@ export class MemoryRetrieverLayer {
         }
 
         if (mode === 'fts') {
-            const rows = await this.deps.searchPgFtsUnified(query, scope.key, maxResults);
+            const [currentRows, sharedMainRows] = await Promise.all([
+                this.deps.searchPgFtsUnified(query, scope.key, maxResults),
+                getSharedMainFtsRows(maxResults),
+            ]);
+            const rows = this.deps.mergeRows([...currentRows, ...sharedMainRows], maxResults);
             if (rows.length === 0) {
                 return keywordFallback('mode_fts_empty');
             }
@@ -151,7 +192,8 @@ export class MemoryRetrieverLayer {
                 .sort((a, b) => b.score - a.score)
                 .slice(0, maxResults);
             return finish(hits, 'mode_fts', {
-                ftsRows: rows.length,
+                ftsRows: currentRows.length,
+                sharedMainFtsRows: sharedMainRows.length,
                 ftsHits: hits.length,
             });
         }
@@ -161,17 +203,25 @@ export class MemoryRetrieverLayer {
                 maxResults,
                 Math.floor(maxResults * this.deps.memoryConfig.retrieval.hybrid_candidate_multiplier),
             );
-            const [vectorRows, sessionRows, sessionVectorRows, temporalRows] = await Promise.all([
+            const [vectorRows, sharedMainVectorRows, sessionRows, sessionVectorRows, temporalRows] = await Promise.all([
                 this.deps.searchPgVector(query, scope.key, candidates),
+                getSharedMainVectorRows(candidates),
                 this.deps.searchPgSessionEventsFts(query, scope.key, candidates),
                 this.deps.searchPgSessionEventsVector(query, scope.key, candidates),
                 this.deps.searchPgSessionEventsTemporal(query, scope.key, candidates),
             ]);
-            const mergedVectorRows = this.deps.mergeRows([...vectorRows, ...sessionVectorRows], candidates);
+            const mergedVectorRows = this.deps.mergeRows(
+                [...vectorRows, ...sharedMainVectorRows, ...sessionVectorRows],
+                candidates,
+            );
             const mergedSessionRows = this.deps.mergeRows([...sessionRows, ...temporalRows], candidates);
 
             if (mergedVectorRows.length === 0) {
-                const ftsRows = await this.deps.searchPgFtsUnified(query, scope.key, maxResults);
+                const [ftsRowsCurrent, ftsRowsShared] = await Promise.all([
+                    this.deps.searchPgFtsUnified(query, scope.key, maxResults),
+                    getSharedMainFtsRows(maxResults),
+                ]);
+                const ftsRows = this.deps.mergeRows([...ftsRowsCurrent, ...ftsRowsShared], maxResults);
                 if (ftsRows.length === 0) {
                     return keywordFallback('mode_vector_empty');
                 }
@@ -183,11 +233,13 @@ export class MemoryRetrieverLayer {
                     .slice(0, maxResults);
                 return finish(hits, 'mode_vector_fallback_fts', {
                     vectorRows: vectorRows.length,
+                    sharedMainVectorRows: sharedMainVectorRows.length,
                     sessionVectorRows: sessionVectorRows.length,
                     mergedVectorRows: mergedVectorRows.length,
                     sessionFtsRows: sessionRows.length,
                     temporalRows: temporalRows.length,
-                    ftsRows: ftsRows.length,
+                    ftsRows: ftsRowsCurrent.length,
+                    sharedMainFtsRows: ftsRowsShared.length,
                     hits: hits.length,
                 });
             }
@@ -204,6 +256,7 @@ export class MemoryRetrieverLayer {
                     .slice(0, maxResults);
                 return finish(hits, 'mode_vector_with_session_merge', {
                     vectorRows: vectorRows.length,
+                    sharedMainVectorRows: sharedMainVectorRows.length,
                     sessionVectorRows: sessionVectorRows.length,
                     mergedVectorRows: mergedVectorRows.length,
                     sessionFtsRows: sessionRows.length,
@@ -219,6 +272,7 @@ export class MemoryRetrieverLayer {
                 .slice(0, maxResults);
             return finish(hits, 'mode_vector_only', {
                 vectorRows: vectorRows.length,
+                sharedMainVectorRows: sharedMainVectorRows.length,
                 sessionVectorRows: sessionVectorRows.length,
                 mergedVectorRows: mergedVectorRows.length,
                 sessionFtsRows: sessionRows.length,
@@ -228,15 +282,21 @@ export class MemoryRetrieverLayer {
         }
 
         const candidates = Math.max(
-            maxResults,
-            Math.floor(maxResults * this.deps.memoryConfig.retrieval.hybrid_candidate_multiplier),
-        );
-        const [ftsRows, vectorRows, sessionVectorRows] = await Promise.all([
+                maxResults,
+                Math.floor(maxResults * this.deps.memoryConfig.retrieval.hybrid_candidate_multiplier),
+            );
+        const [ftsRowsCurrent, ftsRowsShared, vectorRows, sharedMainVectorRows, sessionVectorRows] = await Promise.all([
             this.deps.searchPgFtsUnified(query, scope.key, candidates),
+            getSharedMainFtsRows(candidates),
             this.deps.searchPgVector(query, scope.key, candidates),
+            getSharedMainVectorRows(candidates),
             this.deps.searchPgSessionEventsVector(query, scope.key, candidates),
         ]);
-        const mergedVectorRows = this.deps.mergeRows([...vectorRows, ...sessionVectorRows], candidates);
+        const ftsRows = this.deps.mergeRows([...ftsRowsCurrent, ...ftsRowsShared], candidates);
+        const mergedVectorRows = this.deps.mergeRows(
+            [...vectorRows, ...sharedMainVectorRows, ...sessionVectorRows],
+            candidates,
+        );
 
         if (mergedVectorRows.length === 0 && ftsRows.length === 0) {
             return keywordFallback('mode_hybrid_empty');
@@ -253,8 +313,10 @@ export class MemoryRetrieverLayer {
             .filter((item) => item.score >= minScore)
             .slice(0, maxResults);
         return finish(hits, 'mode_hybrid', {
-            ftsRows: ftsRows.length,
+            ftsRows: ftsRowsCurrent.length,
+            sharedMainFtsRows: ftsRowsShared.length,
             vectorRows: vectorRows.length,
+            sharedMainVectorRows: sharedMainVectorRows.length,
             sessionVectorRows: sessionVectorRows.length,
             mergedVectorRows: mergedVectorRows.length,
             hits: hits.length,

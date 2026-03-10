@@ -303,7 +303,8 @@ MEMORY_PG_PASSWORD="xxx"
         "enabled": true,
         "direct_scope": "direct",     // main | direct (非 Web 渠道)
         "web_direct_scope": "main",   // main | direct (Web 直连默认共享团队记忆)
-        "group_scope_prefix": "group_"
+        "group_scope_prefix": "group_",
+        "shared_main_scope_reads": true // 隔离 scope 是否额外可读 main 团队记忆
       },
       "transcript": {
         "enabled": false
@@ -318,6 +319,8 @@ MEMORY_PG_PASSWORD="xxx"
 - `direct_scope`：控制非 Web 直连渠道的 direct scope，目前主要是 DingTalk / iOS。`main` 表示共享团队记忆，`direct` 表示按发送者隔离。
 - `web_direct_scope`：控制 Web 直连渠道。`main` 表示所有 Web 用户共享团队记忆，`direct` 表示按 `user_id` 隔离。
 - `group_scope_prefix`：控制群聊/共享会话的 scope 前缀；同一个 `conversationId` / `session_id` 仍然会按会话隔离。
+- `shared_main_scope_reads`：开启后，`group_*` / `direct_*` 等隔离 scope 在检索时会额外读取 `main` 的团队记忆（`MEMORY.md`、主 daily、主 HEARTBEAT），但写入仍保留在当前 scope。
+- 如需把当前群聊/私聊里沉淀出的经验正式晋升到团队共享记忆，调用 `memory_save_team`；该工具固定写入 `main` scope。
 
 常见组合：
 
@@ -327,7 +330,8 @@ MEMORY_PG_PASSWORD="xxx"
   "enabled": true,
   "direct_scope": "main",
   "web_direct_scope": "main",
-  "group_scope_prefix": "group_"
+  "group_scope_prefix": "group_",
+  "shared_main_scope_reads": true
 }
 
 // 2) 混合模式：DingTalk 私聊隔离，Web 共享
@@ -335,7 +339,8 @@ MEMORY_PG_PASSWORD="xxx"
   "enabled": true,
   "direct_scope": "direct",
   "web_direct_scope": "main",
-  "group_scope_prefix": "group_"
+  "group_scope_prefix": "group_",
+  "shared_main_scope_reads": true
 }
 
 // 3) 全隔离模式：DingTalk 和 Web 都按用户隔离
@@ -343,7 +348,8 @@ MEMORY_PG_PASSWORD="xxx"
   "enabled": true,
   "direct_scope": "direct",
   "web_direct_scope": "direct",
-  "group_scope_prefix": "group_"
+  "group_scope_prefix": "group_",
+  "shared_main_scope_reads": false
 }
 ```
 

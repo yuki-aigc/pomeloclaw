@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { CompactionConfig } from '../compaction/index.js';
 import type { LLMProvider } from '../config.js';
+import { executeCronSlashCommand } from '../cron/slash.js';
 import {
     formatTokenCount,
     getCompactionHardContextBudget,
@@ -196,6 +197,7 @@ function handleHelpCommand(): CommandResult {
 /models - 列出已配置模型
 /model <别名> - 切换当前模型
 /status - 显示当前会话状态
+/cron - 列出所有渠道的定时任务详情
 /skills - 列出当前已安装技能
 /skill-install <来源> - 远程或本地安装技能
 /skill-remove <名称> - 删除已安装技能
@@ -223,6 +225,15 @@ export async function handleCommand(
 
     if (!parsed) {
         return { handled: false };
+    }
+
+    const cronCommand = await executeCronSlashCommand(input);
+    if (cronCommand.handled) {
+        return {
+            handled: true,
+            action: 'info',
+            response: cronCommand.response,
+        };
     }
 
     switch (parsed.command) {

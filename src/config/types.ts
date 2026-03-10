@@ -91,6 +91,7 @@ export interface AgentMemorySessionIsolationConfig {
     direct_scope: 'main' | 'direct';
     web_direct_scope: 'main' | 'direct';
     group_scope_prefix: string;
+    shared_main_scope_reads: boolean;
 }
 
 export interface AgentMemoryTranscriptConfig {

@@ -41,3 +41,22 @@ export function getCronService(channel?: string): CronService | null {
     }
     return defaultCronService;
 }
+
+export function getAllCronServices(): Array<{ channel?: string; service: CronService }> {
+    const entries: Array<{ channel?: string; service: CronService }> = [];
+    const seen = new Set<CronService>();
+
+    for (const [channel, service] of channelCronServices.entries()) {
+        if (seen.has(service)) {
+            continue;
+        }
+        seen.add(service);
+        entries.push({ channel, service });
+    }
+
+    if (defaultCronService && !seen.has(defaultCronService)) {
+        entries.push({ channel: undefined, service: defaultCronService });
+    }
+
+    return entries;
+}

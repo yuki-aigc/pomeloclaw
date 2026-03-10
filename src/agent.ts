@@ -515,6 +515,7 @@ ${toolSummaryLines.join('\n')}
 - 回溯型问题（之前/上次/昨天/历史/是否聊过）先 memory_search。
 - 需要精确引用（数字/日期/阈值/原话）先 memory_search，再 memory_get。
 - 用户明确要求“记住/保存”时必须调用 memory_save。
+- 当内容应沉淀为跨会话共享的团队经验、标准流程、排障结论、稳定事实时，优先调用 memory_save_team。
 - 检索不足时必须明确说明“已检索但信息不足”。
 
 ## 持续纠错（硬规则）

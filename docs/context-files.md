@@ -65,6 +65,13 @@
 
 它更像“可检索事实背景”，不是行为规则文件。
 
+补充：
+- 如果当前会话里沉淀出应跨群聊/私聊共享的团队知识，应使用 `memory_save_team` 晋升到团队记忆。
+- `memory_save_team(target=long-term)` 会写入全局 `workspace/MEMORY.md`。
+- `memory_save_team(target=daily)` 会写入全局 `workspace/memory/YYYY-MM-DD.md`。
+- `memory_save_team` 建议保存为结构化条目，而不是自由文本，便于长期检索与人工维护。
+- `memory_save_team` 默认按标题做去重/合并，避免 `MEMORY.md` 中出现大量重复团队经验条目。
+
 ## 3. 加载时机
 
 ### 3.1 Prompt Bootstrap 文件
@@ -89,6 +96,7 @@
 - System Prompt 中只注入“如何正确使用记忆工具”的规则提示，不会把 `MEMORY.md` 全量塞进上下文。
 - 需要回溯历史事实时，应优先使用 `memory_search`，必要时再用 `memory_get` 精读。
 - `memory_get` 支持直接读取 `MEMORY.md`、`memory/**/*.md`、`HEARTBEAT.md` 与 `session_events/...` 路径。
+- 当 `shared_main_scope_reads=true` 时，隔离 scope 在检索时还会额外读取 `main` 的团队记忆。
 
 这意味着：
 - `MEMORY.md` 是事实来源。
@@ -124,6 +132,13 @@ workspace/memory/scopes/<scope>/HEARTBEAT.md
 
 ```text
 workspace/memory/scopes/<scope>/LONG_TERM.md
+```
+
+团队共享记忆的显式晋升路径为：
+
+```text
+memory_save_team(target="long-term") -> workspace/MEMORY.md
+memory_save_team(target="daily") -> workspace/memory/YYYY-MM-DD.md
 ```
 
 ## 5. 优先级
@@ -191,3 +206,4 @@ workspace/
 - 所有会话都读全局 `AGENTS.md`。
 - `group_ops` scope 会优先使用自己的 `TOOLS.md`、`SOUL.md`、`HEARTBEAT.md`。
 - `group_ops` 的长期记忆读写落在 `LONG_TERM.md`，不会覆盖全局 `MEMORY.md`。
+- 如果 `group_ops` 中某条经验需要晋升为团队共享知识，应调用 `memory_save_team` 写回全局 `MEMORY.md` 或全局 daily。

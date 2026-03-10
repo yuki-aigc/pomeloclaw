@@ -243,6 +243,32 @@ export class CronService {
         return result;
     }
 
+    async triggerJobNow(id: string): Promise<CronJob> {
+        const trimmedId = id.trim();
+        if (!trimmedId) {
+            throw new Error('任务 ID 不能为空');
+        }
+
+        const startedAtMs = Date.now();
+        const job = await this.markJobRunning(trimmedId, startedAtMs);
+        if (!job) {
+            throw new Error(`未找到任务: ${trimmedId}`);
+        }
+
+        const timer = setTimeout(() => {
+            void this.executeJob(job, 'manual', startedAtMs)
+                .catch((error) => {
+                    this.logger.error(`[Cron] detached manual job ${job.id} failed: ${String(error)}`);
+                })
+                .finally(() => {
+                    this.armTimer();
+                });
+        }, 0);
+        timer.unref?.();
+
+        return job;
+    }
+
     private resolveDelivery(input?: CronDeliveryConfig): CronDeliveryConfig {
         const merged: CronDeliveryConfig = {
             ...this.defaultDelivery,

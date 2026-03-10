@@ -119,6 +119,7 @@ const configSchemaInternal = z.object({
                 direct_scope: z.enum(['main', 'direct']),
                 web_direct_scope: z.enum(['main', 'direct']),
                 group_scope_prefix: z.string(),
+                shared_main_scope_reads: z.boolean(),
             }),
             transcript: z.object({
                 enabled: z.boolean(),

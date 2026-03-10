@@ -73,6 +73,13 @@ flowchart TD
     H --> I
 ```
 
+### 2.1 04:00 任务执行语义
+
+- 任务会先在目标会话的 scope 中执行，而不是固定写入 `main`。
+- 先通过 `memory_search` 回顾最近 24 小时上下文。
+- 再调用 `memory_save(target=\"daily\")` 保存当前 scope 的每日摘要。
+- 如果总结中存在可复用的团队知识，会继续调用 `memory_save_team` 晋升到团队共享记忆。
+
 ---
 
 ## 3. 退出/重启保护流程

@@ -20,6 +20,7 @@ import {
     toGatewayLogger,
 } from './channels/runtime-entry.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand } from './skills/index.js';
+import { executeCronSlashCommand } from './cron/slash.js';
 
 function buildCronDeliveryTarget(job: CronJob, config: ReturnType<typeof loadConfig>): string | undefined {
     const fromJob = job.delivery.target?.trim();
@@ -75,8 +76,14 @@ export async function startIOSService(options?: {
         config,
     });
     await conversationRuntime.initialize();
+    const cronConversationRuntime = new ConversationRuntime({
+        runtimeChannel: 'ios',
+        config,
+    });
+    await cronConversationRuntime.initialize();
 
     let currentAgent = conversationRuntime.getAgent();
+    let cronAgent = cronConversationRuntime.getAgent();
     let gateway: GatewayService | null = null;
     let cronService: CronService | null = null;
     const memoryWorkspacePath = resolve(process.cwd(), config.agent.workspace);
@@ -86,6 +93,7 @@ export async function startIOSService(options?: {
         logger: log,
         onChange: () => {
             conversationRuntime.requestReload();
+            cronConversationRuntime.requestReload();
             log.info('[iOS] Skills changed on disk, reload scheduled for next request.');
         },
     });
@@ -114,12 +122,24 @@ export async function startIOSService(options?: {
                 reloadAgent: async () => {
                     await conversationRuntime.reloadAgent();
                     currentAgent = conversationRuntime.getAgent();
+                    await cronConversationRuntime.reloadAgent();
+                    cronAgent = cronConversationRuntime.getAgent();
                 },
             });
             if (skillCommand.handled) {
                 return {
                     reply: {
                         text: skillCommand.response || '已处理技能命令。',
+                        useMarkdown: false,
+                    },
+                };
+            }
+
+            const cronCommand = await executeCronSlashCommand(userText);
+            if (cronCommand.handled) {
+                return {
+                    reply: {
+                        text: cronCommand.response || '已处理定时任务命令。',
                         useMarkdown: false,
                     },
                 };
@@ -190,11 +210,11 @@ export async function startIOSService(options?: {
                 };
             }
 
-            await conversationRuntime.reloadIfNeeded();
-            currentAgent = conversationRuntime.getAgent();
+            await cronConversationRuntime.reloadIfNeeded();
+            cronAgent = cronConversationRuntime.getAgent();
 
             const threadId = `cron-ios-${job.id}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-            const cronMessages = await conversationRuntime.buildBootstrapMessages({
+            const cronMessages = await cronConversationRuntime.buildBootstrapMessages({
                 threadId,
                 workspacePath: memoryWorkspacePath,
                 scopeKey: 'main',
@@ -203,7 +223,7 @@ export async function startIOSService(options?: {
                 role: 'user',
                 content: `[定时任务 ${job.name}] ${job.payload.message}`,
             });
-            const invokeResult = await currentAgent.invoke(
+            const invokeResult = await cronAgent.invoke(
                 {
                     messages: cronMessages,
                 },
@@ -278,6 +298,11 @@ export async function startIOSService(options?: {
             await conversationRuntime.close();
         } catch (error) {
             log.warn('[iOS] MCP cleanup failed:', error instanceof Error ? error.message : String(error));
+        }
+        try {
+            await cronConversationRuntime.close();
+        } catch (error) {
+            log.warn('[iOS] cron runtime cleanup failed:', error instanceof Error ? error.message : String(error));
         }
 
         if (exitOnShutdown) {

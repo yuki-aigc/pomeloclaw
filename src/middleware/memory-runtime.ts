@@ -222,6 +222,17 @@ function inferSourceType(relPath: string): MemorySourceType {
     return 'daily';
 }
 
+function isSharedMainReadableRelPath(relPath: string): boolean {
+    const normalized = relPath.replace(/\\/g, '/');
+    if (normalized === 'MEMORY.md' || normalized === 'HEARTBEAT.md') {
+        return true;
+    }
+    if (/^memory\/[^/]+\.md$/u.test(normalized)) {
+        return true;
+    }
+    return normalized === 'memory/scopes/main/HEARTBEAT.md';
+}
+
 function toVectorLiteral(embedding: number[]): string {
     const values = embedding
         .map((value) => Number.isFinite(value) ? String(value) : '0')
@@ -533,7 +544,10 @@ export class MemoryRuntime {
             searchFromFiles: (query, scope) => this.searchFromFiles(query, scope),
             searchPgKeywordUnified: (query, scopeKey, limit) => this.searchPgKeywordUnified(query, scopeKey, limit),
             searchPgFtsUnified: (query, scopeKey, limit) => this.searchPgFtsUnified(query, scopeKey, limit),
+            searchPgKeywordChunks: (query, scopeKey, limit) => this.searchPgKeyword(query, scopeKey, limit),
+            searchPgFtsChunks: (query, scopeKey, limit) => this.searchPgFts(query, scopeKey, limit),
             searchPgVector: (query, scopeKey, limit) => this.searchPgVector(query, scopeKey, limit),
+            searchPgVectorChunks: (query, scopeKey, limit) => this.searchPgVector(query, scopeKey, limit),
             searchPgSessionEventsFts: (query, scopeKey, limit) => this.searchPgSessionEventsFts(query, scopeKey, limit),
             searchPgSessionEventsVector: (query, scopeKey, limit) => this.searchPgSessionEventsVector(query, scopeKey, limit),
             searchPgSessionEventsTemporal: (query, scopeKey, limit) => this.searchPgSessionEventsTemporal(query, scopeKey, limit),
@@ -1542,7 +1556,15 @@ export class MemoryRuntime {
         }
 
         const prefix = `memory/scopes/${scope.key}/`;
-        return normalized.startsWith(prefix);
+        if (normalized.startsWith(prefix)) {
+            return true;
+        }
+
+        if (this.memoryConfig.session_isolation.shared_main_scope_reads && isSharedMainReadableRelPath(normalized)) {
+            return true;
+        }
+
+        return false;
     }
 
     private async readMemoryFile(
@@ -2131,8 +2153,43 @@ export class MemoryRuntime {
         const normalizedQuery = query.toLowerCase();
         const results: MemorySearchHit[] = [];
 
-        const scopePaths = this.resolveScopePaths(scope);
         const fileSet = new Set<string>();
+        await this.collectReadableFilesForScope(scope, fileSet);
+        if (scope.key !== 'main' && this.memoryConfig.session_isolation.shared_main_scope_reads) {
+            await this.collectSharedMainReadableFiles(fileSet);
+        }
+
+        const files = Array.from(fileSet);
+        for (const file of files) {
+            const relPath = normalizeRelPath(this.workspacePath, file);
+            const source = inferSourceType(relPath);
+            const content = await readFile(file, 'utf-8').catch(() => '');
+            if (!content) continue;
+            const lines = content.split('\n');
+            for (let i = 0; i < lines.length; i += 1) {
+                const line = lines[i] || '';
+                const lowerLine = line.toLowerCase();
+                const position = lowerLine.indexOf(normalizedQuery);
+                if (position < 0) continue;
+                results.push({
+                    path: relPath,
+                    startLine: i + 1,
+                    endLine: i + 1,
+                    score: 1 / (1 + position),
+                    snippet: summarizeSnippet(line),
+                    source,
+                    strategy: 'keyword',
+                });
+            }
+        }
+
+        return results
+            .sort((a, b) => b.score - a.score)
+            .slice(0, this.memoryConfig.retrieval.max_results);
+    }
+
+    private async collectReadableFilesForScope(scope: MemoryScope, fileSet: Set<string>): Promise<void> {
+        const scopePaths = this.resolveScopePaths(scope);
 
         if (existsSync(scopePaths.longTermPath)) {
             fileSet.add(scopePaths.longTermPath);
@@ -2177,34 +2234,32 @@ export class MemoryRuntime {
                 }
             }
         }
+    }
 
-        const files = Array.from(fileSet);
-        for (const file of files) {
-            const relPath = normalizeRelPath(this.workspacePath, file);
-            const source = inferSourceType(relPath);
-            const content = await readFile(file, 'utf-8').catch(() => '');
-            if (!content) continue;
-            const lines = content.split('\n');
-            for (let i = 0; i < lines.length; i += 1) {
-                const line = lines[i] || '';
-                const lowerLine = line.toLowerCase();
-                const position = lowerLine.indexOf(normalizedQuery);
-                if (position < 0) continue;
-                results.push({
-                    path: relPath,
-                    startLine: i + 1,
-                    endLine: i + 1,
-                    score: 1 / (1 + position),
-                    snippet: summarizeSnippet(line),
-                    source,
-                    strategy: 'keyword',
-                });
+    private async collectSharedMainReadableFiles(fileSet: Set<string>): Promise<void> {
+        const sharedCandidates = [
+            join(this.workspacePath, 'MEMORY.md'),
+            join(this.workspacePath, 'HEARTBEAT.md'),
+            join(this.workspacePath, 'memory', 'scopes', 'main', 'HEARTBEAT.md'),
+        ];
+        for (const candidate of sharedCandidates) {
+            if (existsSync(candidate)) {
+                fileSet.add(candidate);
             }
         }
 
-        return results
-            .sort((a, b) => b.score - a.score)
-            .slice(0, this.memoryConfig.retrieval.max_results);
+        const dailyDir = join(this.workspacePath, 'memory');
+        if (!existsSync(dailyDir)) {
+            return;
+        }
+
+        const entries = await readdir(dailyDir, { withFileTypes: true }).catch(() => []);
+        for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.md')) {
+                continue;
+            }
+            fileSet.add(join(dailyDir, entry.name));
+        }
     }
 }
 

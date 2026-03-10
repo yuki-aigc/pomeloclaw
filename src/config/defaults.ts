@@ -93,6 +93,7 @@ export const DEFAULT_CONFIG: Config = {
                 direct_scope: 'direct' as const,
                 web_direct_scope: 'main' as const,
                 group_scope_prefix: 'group_',
+                shared_main_scope_reads: true,
             },
             transcript: {
                 enabled: false,

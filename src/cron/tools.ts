@@ -2,33 +2,8 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import type { Config } from '../config.js';
 import { getCronService } from './runtime.js';
-import { formatScheduleSummary } from './schedule.js';
 import { getChannelConversationContext } from '../channels/context.js';
-import type { CronJob } from './types.js';
-
-function formatDateTime(ms?: number): string {
-    if (typeof ms !== 'number') return 'n/a';
-    return new Date(ms).toLocaleString('zh-CN', { hour12: false });
-}
-
-function formatJob(job: CronJob): string {
-    const lines = [
-        `- id: ${job.id}`,
-        `  name: ${job.name}`,
-        `  enabled: ${job.enabled}`,
-        `  schedule: ${formatScheduleSummary(job.schedule)}`,
-        `  nextRun: ${formatDateTime(job.state.nextRunAtMs)}`,
-        `  lastRun: ${formatDateTime(job.state.lastRunAtMs)}`,
-        `  lastStatus: ${job.state.lastStatus || 'n/a'}`,
-        `  channel: ${job.delivery.channel || 'n/a'}`,
-        `  target: ${job.delivery.target || 'n/a'}`,
-        `  message: ${job.payload.message}`,
-    ];
-    if (job.state.lastError) {
-        lines.push(`  lastError: ${job.state.lastError}`);
-    }
-    return lines.join('\n');
-}
+import { formatCronJob } from './format.js';
 
 function resolveConversationDefaultDelivery(): { channel: string; target: string } | undefined {
     const context = getChannelConversationContext();
@@ -76,14 +51,14 @@ export function createCronTools(_config: Config) {
             if (id?.trim()) {
                 const job = await service.getJob(id);
                 if (!job) return `❌ 未找到任务: ${id}`;
-                return `✅ 定时任务详情\nservice: enabled=${status.enabled}, started=${status.started}, timezone=${status.timezone || 'n/a'}\n${formatJob(job)}`;
+                return `✅ 定时任务详情\nservice: enabled=${status.enabled}, started=${status.started}, timezone=${status.timezone || 'n/a'}\n${formatCronJob(job)}`;
             }
 
             const jobs = await service.listJobs();
             if (jobs.length === 0) {
                 return `📭 当前没有定时任务。\nservice: enabled=${status.enabled}, started=${status.started}, timezone=${status.timezone || 'n/a'}`;
             }
-            const details = jobs.map((job) => formatJob(job)).join('\n\n');
+            const details = jobs.map((job) => formatCronJob(job)).join('\n\n');
             return `📋 定时任务列表（共 ${jobs.length} 个）\nservice: enabled=${status.enabled}, started=${status.started}, timezone=${status.timezone || 'n/a'}\n${details}`;
         },
         {
@@ -123,7 +98,7 @@ export function createCronTools(_config: Config) {
                     useMarkdown,
                 },
             });
-            return `✅ 定时任务已创建\n${formatJob(job)}`;
+            return `✅ 定时任务已创建\n${formatCronJob(job)}`;
         },
         {
             name: 'cron_job_add',
@@ -181,7 +156,7 @@ export function createCronTools(_config: Config) {
             }
 
             const job = await service.updateJob(id, patch);
-            return `✅ 定时任务已更新\n${formatJob(job)}`;
+            return `✅ 定时任务已更新\n${formatCronJob(job)}`;
         },
         {
             name: 'cron_job_update',
@@ -223,18 +198,14 @@ export function createCronTools(_config: Config) {
     const cronRunNowTool = tool(
         async ({ id }) => {
             const service = requireCronService();
-            const result = await service.runJobNow(id);
-            if (result.status === 'ok') {
-                return `✅ 任务已执行完成: ${id}\n${result.summary || '(无摘要)'}`;
-            }
-            if (result.status === 'skipped') {
-                return `⚠️ 任务已跳过: ${id}\n${result.error || '(无详情)'}`;
-            }
-            return `❌ 任务执行失败: ${id}\n${result.error || '(无详情)'}`;
+            const job = await service.triggerJobNow(id);
+            const target = job.delivery.target || '默认目标';
+            const channel = job.delivery.channel || '默认渠道';
+            return `✅ 任务已开始后台执行: ${id}\nname: ${job.name}\nchannel: ${channel}\ntarget: ${target}\n结果会在执行完成后按任务配置发送；当前对话不会等待它跑完。`;
         },
         {
             name: 'cron_job_run_now',
-            description: '立即执行指定任务（按 id）。',
+            description: '立即在后台执行指定任务（按 id），当前对话不会同步等待任务完成。',
             schema: z.object({
                 id: z.string().describe('任务 ID'),
             }),
