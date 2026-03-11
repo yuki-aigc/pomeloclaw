@@ -132,6 +132,49 @@ function normalizeList(items?: string[]): string[] {
     return normalized;
 }
 
+function coerceStringListInput(value: unknown): unknown {
+    if (value === undefined || value === null) {
+        return undefined;
+    }
+
+    if (Array.isArray(value)) {
+        return normalizeList(value.map((item) => String(item)));
+    }
+
+    if (typeof value !== 'string') {
+        return value;
+    }
+
+    const text = value.trim();
+    if (!text || text === '无') {
+        return [];
+    }
+
+    if (text.startsWith('[') && text.endsWith(']')) {
+        try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) {
+                return normalizeList(parsed.map((item) => String(item)));
+            }
+        } catch {
+            // Fall through to line-based parsing.
+        }
+    }
+
+    const lines = text
+        .split('\n')
+        .map((line) => line.replace(/^[-*]\s+/u, '').replace(/^\d+\.\s+/u, '').trim())
+        .filter(Boolean);
+    return normalizeList(lines);
+}
+
+function stringListFieldSchema(description: string) {
+    return z.preprocess(
+        (value) => coerceStringListInput(value),
+        z.array(z.string()).optional(),
+    ).describe(description);
+}
+
 function inferTeamMemoryTitle(content: string, reason?: string): string {
     const firstLine = content
         .split('\n')
@@ -426,10 +469,10 @@ export function createMemoryTools(workspacePath: string, config: Config) {
                 title: z.string().optional().describe('团队记忆标题，建议一句话概括'),
                 summary: z.string().optional().describe('核心摘要，说明结论或经验本身'),
                 applicability: z.string().optional().describe('适用场景，例如 哪类问题/什么条件下应使用'),
-                steps: z.array(z.string()).optional().describe('建议执行步骤，按顺序列出'),
-                constraints: z.array(z.string()).optional().describe('边界条件、风险、注意事项'),
-                evidence: z.array(z.string()).optional().describe('依据或证据，例如 来自哪个案例/观察/日志结论'),
-                tags: z.array(z.string()).optional().describe('标签，例如 排障流程/告警/数据库'),
+                steps: stringListFieldSchema('建议执行步骤，按顺序列出（支持字符串数组或多行文本）'),
+                constraints: stringListFieldSchema('边界条件、风险、注意事项（支持字符串数组或多行文本）'),
+                evidence: stringListFieldSchema('依据或证据，例如 来自哪个案例/观察/日志结论（支持字符串数组或多行文本）'),
+                tags: stringListFieldSchema('标签，例如 排障流程/告警/数据库（支持字符串数组或多行文本）'),
                 content: z.string().optional().describe('兼容字段：当无法提供结构化字段时，可提供原始内容，系统会自动包装成结构化条目'),
             }),
         }

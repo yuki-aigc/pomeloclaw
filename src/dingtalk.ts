@@ -69,6 +69,7 @@ export function buildAutoMemorySaveJobPrompt(): string {
         '7. 如果存在上述可复用知识，再调用 memory_save_team：',
         '   - 优先使用 target="long-term"',
         '   - 使用结构化字段填写：title / summary / applicability / steps / constraints / evidence / tags',
+        '   - steps / constraints / evidence / tags 优先传字符串数组；若是多行文本也要确保每行只包含一个要点',
         '   - summary 只保留可复用知识本身，不要整段复制 daily 摘要',
         '   - reason 简洁写明晋升原因，例如“标准流程”/“通用排障经验”/“团队共识”',
         '8. 若没有足够稳定、可复用的团队知识，则跳过 memory_save_team，不要为了调用而调用。',

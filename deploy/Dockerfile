@@ -37,8 +37,8 @@ ENV HOME=/home/ubuntu
 
 # 安装pnpm，claude code,  uvx等
 RUN npm install -g pnpm && \
-curl -LsSf https://astral.sh/uv/install.sh | sh 
-# curl -fsSL https://claude.ai/install.sh | bash
+curl -LsSf https://astral.sh/uv/install.sh | sh && \
+npm i -g @openai/codex
 
 WORKDIR /app
 

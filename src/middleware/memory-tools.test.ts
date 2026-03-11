@@ -147,3 +147,48 @@ test('memory_save_team merges entries with the same title instead of appending d
     assert.match(mainMemory, /- 晋升原因: 标准流程 \/ 团队共识|- 晋升原因: 团队共识 \/ 标准流程/);
     assert.match(mainMemory, /- 标签: 时间语义 \/ 查询流程|- 标签: 查询流程 \/ 时间语义/);
 });
+
+test('memory_save_team accepts multiline string fields for list sections', async (t) => {
+    const workspacePath = await mkdtemp(join(tmpdir(), 'pomelobot-memory-multiline-'));
+    t.after(async () => {
+        await rm(workspacePath, { recursive: true, force: true });
+    });
+
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.agent.memory.backend = 'filesystem';
+    config.agent.memory.pgsql.enabled = false;
+
+    const tools = createMemoryTools(workspacePath, config);
+    const teamTool = tools.find((tool) => tool.name === 'memory_save_team');
+    assert.ok(teamTool);
+
+    await withChannelConversationContext(
+        {
+            channel: 'dingtalk',
+            conversationId: 'cid-team-room',
+            isDirect: false,
+            senderId: 'user-a',
+            senderName: 'User A',
+            pendingReplyFiles: [],
+        },
+        async () => {
+            await teamTool!.invoke({
+                target: 'long-term',
+                reason: '标准流程',
+                title: '时间范围查询前必须确认系统日期',
+                summary: '先确认系统日期，再计算查询窗口。',
+                steps: '1. 执行 date 命令确认当前系统日期和时间\n2. 根据确认后的日期计算查询时间范围',
+                constraints: '- 不要假设或硬编码日期\n- 在回复中明确标注查询的时间范围',
+                evidence: '- 2026-03-04 用户明确要求并保存到长期记忆\n- 2026-03-10 用户再次纠正日期',
+                tags: '- 标准流程\n- 时间校验',
+            });
+        },
+    );
+
+    const mainMemory = await readFile(join(workspacePath, 'MEMORY.md'), 'utf-8');
+    assert.match(mainMemory, /1\. 执行 date 命令确认当前系统日期和时间/);
+    assert.match(mainMemory, /2\. 根据确认后的日期计算查询时间范围/);
+    assert.match(mainMemory, /- 不要假设或硬编码日期/);
+    assert.match(mainMemory, /- 2026-03-10 用户再次纠正日期/);
+    assert.match(mainMemory, /- 标签: 标准流程 \/ 时间校验|- 标签: 时间校验 \/ 标准流程/);
+});
