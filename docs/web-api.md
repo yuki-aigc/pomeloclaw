@@ -248,6 +248,97 @@ Web 渠道当前默认会做三层持久化：
 - 下载 URL 由服务端签发
 - 文件注册有 TTL，不保证永久有效
 
+### 3.6 管理 SKILL 与记忆 Markdown
+
+用于前端管理技能目录内文件（含 `SKILL.md`、其他 `.md`、脚本等）以及 `MEMORY.md / memory/*.md`。
+
+接口：
+
+- `GET /api/web/files/skills`
+- `GET /api/web/files/skills?skill=<目录名>[&path=<技能内相对路径>]`
+- `PUT /api/web/files/skills`
+- `GET /api/web/files/memory?path=<相对路径>`
+- `PUT /api/web/files/memory`
+
+鉴权：
+
+- 若配置了 `web.authToken`，请求需带 `Authorization: Bearer <token>`，或 `x-web-auth-token: <token>`。
+- 若未配置 `web.authToken`，默认放行（建议内网使用）。
+
+`GET /api/web/files/skills` 响应示例：
+
+```json
+{
+  "ok": true,
+  "skills": [
+    {
+      "skill": "alert-rca",
+      "path": "/abs/path/workspace/skills/alert-rca/SKILL.md",
+      "sizeBytes": 1024,
+      "updatedAtMs": 1772580000000
+    }
+  ]
+}
+```
+
+`GET /api/web/files/skills?skill=alert-rca` 响应示例：
+
+```json
+{
+  "ok": true,
+  "skill": "alert-rca",
+  "skillRootPath": "/abs/path/workspace/skills/alert-rca",
+  "summary": {
+    "fileCount": 6,
+    "directoryCount": 2
+  },
+  "tree": [
+    {
+      "path": "docs",
+      "name": "docs",
+      "kind": "directory",
+      "children": [
+        { "path": "docs/README.md", "name": "README.md", "kind": "file", "sizeBytes": 512, "updatedAtMs": 1772580000000 }
+      ]
+    },
+    { "path": "scripts/fix.py", "name": "fix.py", "kind": "file", "sizeBytes": 120, "updatedAtMs": 1772580000000 },
+    { "path": "SKILL.md", "name": "SKILL.md", "kind": "file", "sizeBytes": 1024, "updatedAtMs": 1772580000000 }
+  ],
+  "file": {
+    "relativePath": "SKILL.md",
+    "absPath": "/abs/path/workspace/skills/alert-rca/SKILL.md",
+    "missing": false,
+    "sizeBytes": 1024,
+    "updatedAtMs": 1772580000000,
+    "content": "---\nname: alert-rca\n..."
+  }
+}
+```
+
+`PUT /api/web/files/skills` 请求示例：
+
+```json
+{
+  "skill": "alert-rca",
+  "path": "docs/README.md",
+  "content": "---\nname: alert-rca\n..."
+}
+```
+
+说明：
+
+- `path` 可选，默认 `SKILL.md`
+- `path` 必须是技能目录内相对路径（禁止 `..` 和绝对路径）
+- `GET` 返回技能目录树（`tree`，节点含 `children`）以及当前读取文件内容（`file`）
+
+`GET /api/web/files/memory` 默认读取 `MEMORY.md`。你也可以传 `path=memory/2026-03-11.md` 等路径。
+
+限制：
+
+- `skills` 仅允许访问 `workspace/skills/<skill>/` 目录内的普通文件（拒绝越界路径、符号链接、硬链接）
+- 只允许访问 `MEMORY.md` 或 `memory/**/*.md`
+- 禁止 `..`、绝对路径、符号链接/硬链接目标
+
 ## 4. WebSocket API
 
 ### 4.1 连接地址

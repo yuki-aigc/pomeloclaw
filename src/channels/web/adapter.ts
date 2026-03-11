@@ -33,6 +33,14 @@ import {
     resolvePathFromWorkspace,
     sanitizeFileName,
 } from './file-utils.js';
+import {
+    listSkillFiles,
+    listSkillMarkdownFiles,
+    readSkillFile,
+    readMemoryMarkdownFile,
+    writeMemoryMarkdownFile,
+    writeSkillFile,
+} from './workspace-file-store.js';
 import type {
     WebAttachmentPayload,
     WebAttachmentRecord,
@@ -51,6 +59,7 @@ export interface WebChannelAdapterOptions {
     config: WebConfig;
     log: WebLogger;
     workspaceRoot: string;
+    skillsRoot: string;
 }
 
 export interface WebStreamRequest {
@@ -61,6 +70,8 @@ export interface WebStreamRequest {
 const ATTACHMENT_TTL_MS = 6 * 60 * 60 * 1000;
 const SESSION_API_PATH = '/api/web/sessions';
 const UPLOAD_API_PATH = '/api/web/uploads';
+const SKILLS_FILE_API_PATH = '/api/web/files/skills';
+const MEMORY_FILE_API_PATH = '/api/web/files/memory';
 
 function parseClientEnvelope(raw: RawData): WebClientEnvelope | null {
     let text = '';
@@ -349,7 +360,12 @@ export class WebChannelAdapter implements ChannelAdapter {
         const method = req.method || 'GET';
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
         const attachmentBasePath = buildAttachmentBasePath(uiPath);
-        if (method === 'OPTIONS' && (url.pathname === SESSION_API_PATH || url.pathname === UPLOAD_API_PATH)) {
+        if (method === 'OPTIONS' && (
+            url.pathname === SESSION_API_PATH
+            || url.pathname === UPLOAD_API_PATH
+            || url.pathname === SKILLS_FILE_API_PATH
+            || url.pathname === MEMORY_FILE_API_PATH
+        )) {
             this.writeApiCorsHeaders(res);
             res.writeHead(204);
             res.end();
@@ -369,6 +385,34 @@ export class WebChannelAdapter implements ChannelAdapter {
         if (method === 'POST' && url.pathname === UPLOAD_API_PATH) {
             await this.handleUploadRequest(req, res);
             return;
+        }
+
+        if (url.pathname === SKILLS_FILE_API_PATH) {
+            if (!this.ensureWorkspaceManageApiAuthorized(req, res)) {
+                return;
+            }
+            if (method === 'GET') {
+                await this.handleSkillFileReadRequest(url, res);
+                return;
+            }
+            if (method === 'PUT') {
+                await this.handleSkillFileWriteRequest(req, res);
+                return;
+            }
+        }
+
+        if (url.pathname === MEMORY_FILE_API_PATH) {
+            if (!this.ensureWorkspaceManageApiAuthorized(req, res)) {
+                return;
+            }
+            if (method === 'GET') {
+                await this.handleMemoryFileReadRequest(url, res);
+                return;
+            }
+            if (method === 'PUT') {
+                await this.handleMemoryFileWriteRequest(req, res);
+                return;
+            }
         }
 
         if (method === 'GET' && (url.pathname === uiPath || (uiPath !== '/' && url.pathname === '/'))) {
@@ -579,6 +623,175 @@ export class WebChannelAdapter implements ChannelAdapter {
         }
     }
 
+    private async handleSkillFileReadRequest(url: URL, res: ServerResponse): Promise<void> {
+        try {
+            const skill = tryTrim(url.searchParams.get('skill')) || tryTrim(url.searchParams.get('name'));
+            if (!skill) {
+                const skills = await listSkillMarkdownFiles(this.options.skillsRoot);
+                this.writeApiJson(res, 200, {
+                    ok: true,
+                    skills: skills.map((item) => ({
+                        skill: item.skillDir,
+                        path: item.absPath,
+                        sizeBytes: item.sizeBytes,
+                        updatedAtMs: item.updatedAtMs,
+                    })),
+                });
+                return;
+            }
+
+            const targetPath = tryTrim(url.searchParams.get('path')) || tryTrim(url.searchParams.get('file'));
+            const tree = await listSkillFiles({
+                skillsRoot: this.options.skillsRoot,
+                skillDir: skill,
+            });
+            const file = await readSkillFile({
+                skillsRoot: this.options.skillsRoot,
+                skillDir: skill,
+                relativePath: targetPath,
+            });
+            this.writeApiJson(res, 200, {
+                ok: true,
+                skill,
+                skillRootPath: tree.skillRootPath,
+                summary: {
+                    fileCount: tree.fileCount,
+                    directoryCount: tree.directoryCount,
+                },
+                tree: tree.tree,
+                file: {
+                    relativePath: file.relativePath,
+                    absPath: file.absPath,
+                    missing: !file.exists,
+                    sizeBytes: file.sizeBytes,
+                    updatedAtMs: file.updatedAtMs,
+                    content: file.content,
+                },
+            });
+        } catch (error) {
+            this.writeApiError(
+                res,
+                400,
+                'bad_request',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
+    private async handleSkillFileWriteRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+        try {
+            const body = await this.readJsonBody(req, 2 * 1024 * 1024);
+            const skill = tryTrim(body.skill) || tryTrim(body.skill_dir) || tryTrim(body.name);
+            const relativePath = tryTrim(body.path) || tryTrim(body.file);
+            if (!skill) {
+                this.writeApiError(res, 400, 'bad_request', 'skill 不能为空');
+                return;
+            }
+            if (typeof body.content !== 'string') {
+                this.writeApiError(res, 400, 'bad_request', 'content 必须是字符串');
+                return;
+            }
+
+            const file = await writeSkillFile({
+                skillsRoot: this.options.skillsRoot,
+                skillDir: skill,
+                relativePath,
+                content: body.content,
+            });
+            const tree = await listSkillFiles({
+                skillsRoot: this.options.skillsRoot,
+                skillDir: skill,
+            });
+            this.writeApiJson(res, 200, {
+                ok: true,
+                skill,
+                skillRootPath: tree.skillRootPath,
+                summary: {
+                    fileCount: tree.fileCount,
+                    directoryCount: tree.directoryCount,
+                },
+                tree: tree.tree,
+                file: {
+                    relativePath: file.relativePath,
+                    absPath: file.absPath,
+                    missing: false,
+                    sizeBytes: file.sizeBytes,
+                    updatedAtMs: file.updatedAtMs,
+                    content: file.content,
+                },
+            });
+        } catch (error) {
+            this.writeApiError(
+                res,
+                400,
+                'bad_request',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
+    private async handleMemoryFileReadRequest(url: URL, res: ServerResponse): Promise<void> {
+        try {
+            const relPath = tryTrim(url.searchParams.get('path'));
+            const file = await readMemoryMarkdownFile({
+                workspaceRoot: this.options.workspaceRoot,
+                relativePath: relPath,
+            });
+            this.writeApiJson(res, 200, {
+                ok: true,
+                file: {
+                    path: file.relativePath,
+                    absPath: file.absPath,
+                    missing: !file.exists,
+                    sizeBytes: file.sizeBytes,
+                    updatedAtMs: file.updatedAtMs,
+                    content: file.content,
+                },
+            });
+        } catch (error) {
+            this.writeApiError(
+                res,
+                400,
+                'bad_request',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
+    private async handleMemoryFileWriteRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+        try {
+            const body = await this.readJsonBody(req, 2 * 1024 * 1024);
+            const relPath = tryTrim(body.path);
+            if (typeof body.content !== 'string') {
+                this.writeApiError(res, 400, 'bad_request', 'content 必须是字符串');
+                return;
+            }
+            const file = await writeMemoryMarkdownFile({
+                workspaceRoot: this.options.workspaceRoot,
+                relativePath: relPath,
+                content: body.content,
+            });
+            this.writeApiJson(res, 200, {
+                ok: true,
+                file: {
+                    path: file.relativePath,
+                    absPath: file.absPath,
+                    missing: false,
+                    sizeBytes: file.sizeBytes,
+                    updatedAtMs: file.updatedAtMs,
+                    content: file.content,
+                },
+            });
+        } catch (error) {
+            this.writeApiError(
+                res,
+                400,
+                'bad_request',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
     private async readUploadRequest(req: IncomingMessage): Promise<{
         userId?: string;
         sessionId?: string;
@@ -656,6 +869,42 @@ export class WebChannelAdapter implements ChannelAdapter {
         }
 
         return { userId, sessionId, files };
+    }
+
+    private ensureWorkspaceManageApiAuthorized(req: IncomingMessage, res: ServerResponse): boolean {
+        const expected = this.options.config.authToken?.trim();
+        if (!expected) {
+            return true;
+        }
+
+        const authorization = this.readHeaderToken(req.headers.authorization);
+        if (authorization) {
+            const bearer = authorization.match(/^Bearer\s+(.+)$/i);
+            const token = (bearer?.[1] || authorization).trim();
+            if (token === expected) {
+                return true;
+            }
+        }
+
+        const customToken = this.readHeaderToken(req.headers['x-web-auth-token'])
+            || this.readHeaderToken(req.headers['x-web-token']);
+        if (customToken?.trim() === expected) {
+            return true;
+        }
+
+        this.writeApiError(res, 401, 'unauthorized', '缺少或无效的授权 token');
+        return false;
+    }
+
+    private readHeaderToken(value: string | string[] | undefined): string | undefined {
+        if (typeof value === 'string') {
+            return value.trim() || undefined;
+        }
+        if (Array.isArray(value)) {
+            const first = value.find((item) => typeof item === 'string' && item.trim());
+            return first?.trim() || undefined;
+        }
+        return undefined;
     }
 
     private async registerInboundUpload(params: {
@@ -1228,8 +1477,32 @@ export class WebChannelAdapter implements ChannelAdapter {
 
     private writeApiCorsHeaders(res: ServerResponse): void {
         res.setHeader('access-control-allow-origin', '*');
-        res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
-        res.setHeader('access-control-allow-headers', 'content-type, authorization, x-web-auth-token');
+        res.setHeader('access-control-allow-methods', 'GET, POST, PUT, OPTIONS');
+        res.setHeader('access-control-allow-headers', 'content-type, authorization, x-web-auth-token, x-web-token');
+    }
+
+    private writeApiJson(res: ServerResponse, status: number, payload: unknown): void {
+        this.writeApiCorsHeaders(res);
+        res.writeHead(status, {
+            'content-type': 'application/json; charset=utf-8',
+            'cache-control': 'no-store',
+        });
+        res.end(JSON.stringify(payload));
+    }
+
+    private writeApiError(
+        res: ServerResponse,
+        status: number,
+        code: string,
+        message: string,
+    ): void {
+        this.writeApiJson(res, status, {
+            ok: false,
+            error: {
+                code,
+                message,
+            },
+        });
     }
 }
 

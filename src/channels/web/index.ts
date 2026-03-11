@@ -6,3 +6,4 @@ export * from './ui.js';
 export * from './context.js';
 export * from './file-return-tools.js';
 export * from './file-utils.js';
+export * from './workspace-file-store.js';

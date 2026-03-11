@@ -7,7 +7,7 @@
       "description": "自动创建，请勿删除。[system:auto-memory-save-4am:v1]",
       "enabled": true,
       "createdAtMs": 1770709421291,
-      "updatedAtMs": 1773116078568,
+      "updatedAtMs": 1773196495403,
       "schedule": {
         "kind": "cron",
         "expr": "0 4 * * *",
@@ -15,7 +15,7 @@
       },
       "payload": {
         "kind": "agentTurn",
-        "message": "请执行每日记忆归档任务。\n要求：\n1. 先调用 memory_search，检索“最近24小时 / 今天 / 昨天”相关的记忆与会话事件。\n2. 再回顾最近24小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。\n3. 输出内容必须使用以下固定结构；没有信息时写“无”：\n## 当前任务\n- ...\n\n## 最新用户请求\n- ...\n\n## 已完成进展\n- ...\n\n## 进行中工作\n- ...\n\n## 待办与后续承诺\n- ...\n\n## 关键决策与约束\n- ...\n\n## 未解决问题与风险\n- ...\n4. 输出内容必须满足以下要求：\n   1) 使用中文。\n   2) 使用上面的固定结构；没有信息时写“无”。\n   3) 优先保留“进行中工作态”，不要只写静态结论。\n   4) 不要编造未出现的信息，不要把猜测写成事实。\n   5) 保持简洁，适合作为后续对话继续执行任务的工作摘要。\n5. 调用 memory_save，target 必须是 daily；content 直接填写上面的结构化摘要正文，不要包“对话摘要:”前缀。\n6. 在 daily 归档完成后，检查本次总结里是否存在可跨会话复用的团队知识，例如：标准流程、稳定约束、通用排障经验、明确结论、团队共识。\n7. 如果存在上述可复用知识，再调用 memory_save_team：\n   - 优先使用 target=\"long-term\"\n   - 使用结构化字段填写：title / summary / applicability / steps / constraints / evidence / tags\n   - summary 只保留可复用知识本身，不要整段复制 daily 摘要\n   - reason 简洁写明晋升原因，例如“标准流程”/“通用排障经验”/“团队共识”\n8. 若没有足够稳定、可复用的团队知识，则跳过 memory_save_team，不要为了调用而调用。\n9. 完成后在回复末尾明确输出: memory_saved。\n注意：若你没有先调用 memory_save 就结束任务，视为失败。"
+        "message": "请执行每日记忆归档任务。\n要求：\n1. 先调用 memory_search，检索“最近24小时 / 今天 / 昨天”相关的记忆与会话事件。\n2. 再回顾最近24小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。\n3. 输出内容必须使用以下固定结构；没有信息时写“无”：\n## 当前任务\n- ...\n\n## 最新用户请求\n- ...\n\n## 已完成进展\n- ...\n\n## 进行中工作\n- ...\n\n## 待办与后续承诺\n- ...\n\n## 关键决策与约束\n- ...\n\n## 未解决问题与风险\n- ...\n4. 输出内容必须满足以下要求：\n   1) 使用中文。\n   2) 使用上面的固定结构；没有信息时写“无”。\n   3) 优先保留“进行中工作态”，不要只写静态结论。\n   4) 不要编造未出现的信息，不要把猜测写成事实。\n   5) 保持简洁，适合作为后续对话继续执行任务的工作摘要。\n5. 调用 memory_save，target 必须是 daily；content 直接填写上面的结构化摘要正文，不要包“对话摘要:”前缀。\n6. 在 daily 归档完成后，检查本次总结里是否存在可跨会话复用的团队知识，例如：标准流程、稳定约束、通用排障经验、明确结论、团队共识。\n7. 如果存在上述可复用知识，再调用 memory_save_team：\n   - 优先使用 target=\"long-term\"\n   - 使用结构化字段填写：title / summary / applicability / steps / constraints / evidence / tags\n   - steps / constraints / evidence / tags 优先传字符串数组；若是多行文本也要确保每行只包含一个要点\n   - summary 只保留可复用知识本身，不要整段复制 daily 摘要\n   - reason 简洁写明晋升原因，例如“标准流程”/“通用排障经验”/“团队共识”\n8. 若没有足够稳定、可复用的团队知识，则跳过 memory_save_team，不要为了调用而调用。\n9. 完成后在回复末尾明确输出: memory_saved。\n注意：若你没有先调用 memory_save 就结束任务，视为失败。"
       },
       "delivery": {
         "channel": "dingtalk",
@@ -24,7 +24,7 @@
         "title": "SREBot 定时任务"
       },
       "state": {
-        "nextRunAtMs": 1773172800000,
+        "nextRunAtMs": 1773259200000,
         "lastRunAtMs": 1773116078568,
         "lastStatus": "ok",
         "lastDurationMs": 32535
@@ -50,7 +50,7 @@
         "target": "cidiEyrF5XkYWeE9XY4IyDrMg=="
       },
       "state": {
-        "nextRunAtMs": 1773187200000,
+        "nextRunAtMs": 1773273600000,
         "lastRunAtMs": 1773116029212,
         "lastStatus": "ok",
         "lastDurationMs": 21646

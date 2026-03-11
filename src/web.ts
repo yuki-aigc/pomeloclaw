@@ -934,6 +934,7 @@ export async function startWebService(options?: {
         config: webConfig,
         log,
         workspaceRoot: memoryWorkspacePath,
+        skillsRoot: skillsPath,
     });
     gateway.registerAdapter(webAdapter);
     await gateway.start();
