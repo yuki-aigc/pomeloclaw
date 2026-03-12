@@ -17,6 +17,12 @@
 
 ---
 
+<p align="center">
+  <img src="docs/pomeloclaw_infra.png" alt="Pomeloclaw 架构总览" width="720" />
+</p>
+
+---
+
 ## 特性
 
 | 能力 | 说明 |
