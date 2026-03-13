@@ -23,3 +23,4 @@ workspace/tmp/*
 # SKILLS部分目录
 workspace/skills/cloud-resource-bill
 workspace/skills/hologres-cost-analysis
+workspace/skills/oss-cost-analysis
