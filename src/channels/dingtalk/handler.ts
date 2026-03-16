@@ -66,13 +66,13 @@ import { withDingTalkConversationContext, consumeQueuedDingTalkReplyFiles } from
 import { resolveMemoryScope, withForcedMemoryScope, type MemoryScope } from '../../middleware/memory-scope.js';
 import { DingTalkSessionStore, createSessionThreadId } from './session-store.js';
 import { buildPromptBootstrapMessage } from '../../prompt/bootstrap.js';
-import {
-    buildSessionStartupMemoryInjection,
-    buildUserMessagesWithMemoryPolicy,
-    hasMemoryRecallIntent,
-} from '../../prompt/memory-policy.js';
 import { executeSkillSlashCommand } from '../../skills/index.js';
 import { executeCronSlashCommand } from '../../cron/slash.js';
+import {
+    enqueueConversationTask,
+    prepareConversationUserMessages,
+    withTimeout,
+} from '../conversation-utils.js';
 
 // Session state cache (scopeKey -> SessionState)
 const sessionCache = new Map<string, SessionState>();
@@ -126,20 +126,6 @@ const TEXT_FILE_EXTENSIONS = new Set([
     '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.java', '.rb', '.php', '.sql', '.sh',
     '.bash', '.zsh', '.ini', '.toml', '.conf', '.log', '.env',
 ]);
-
-function enqueueConversationTask(
-    conversationId: string,
-    task: () => Promise<void>
-): Promise<void> {
-    const previous = conversationQueue.get(conversationId) ?? Promise.resolve();
-    const next = previous.then(task, task).finally(() => {
-        if (conversationQueue.get(conversationId) === next) {
-            conversationQueue.delete(conversationId);
-        }
-    });
-    conversationQueue.set(conversationId, next);
-    return next;
-}
 
 /**
  * Extract message content from DingTalk message
@@ -556,22 +542,17 @@ function toAgentHistoryMessage(message: BaseMessage): { role: 'assistant' | 'use
 
 function buildAgentInvocationMessages(
     session: SessionState,
-    userText: string,
+    userMessages: Array<{ role: 'user'; content: string }>,
     options?: {
-        enforceMemorySearch?: boolean;
-        startupMemoryInjection?: string | null;
-        bootstrapPromptMessage?: { role: 'user'; content: string } | null;
+        bootstrapMessages?: Array<{ role: 'user'; content: string }>;
     },
 ): Array<{ role: 'assistant' | 'user'; content: string }> {
-    const bootstrapMessages: Array<{ role: 'user'; content: string }> = [];
-    if (options?.bootstrapPromptMessage) {
-        bootstrapMessages.push(options.bootstrapPromptMessage);
-    }
+    const bootstrapMessages = options?.bootstrapMessages || [];
 
     if (hydratedThreadIds.has(session.threadId)) {
         return normalizeInvocationMessages([
             ...bootstrapMessages,
-            ...buildUserMessagesWithMemoryPolicy(userText, options),
+            ...userMessages,
         ]);
     }
 
@@ -582,14 +563,14 @@ function buildAgentInvocationMessages(
     if (history.length === 0) {
         return normalizeInvocationMessages([
             ...bootstrapMessages,
-            ...buildUserMessagesWithMemoryPolicy(userText, options),
+            ...userMessages,
         ]);
     }
 
     return normalizeInvocationMessages([
         ...bootstrapMessages,
         ...history,
-        ...buildUserMessagesWithMemoryPolicy(userText, options),
+        ...userMessages,
     ]);
 }
 
@@ -1717,7 +1698,7 @@ export async function handleMessage(
     const senderId = data.senderStaffId || data.senderId;
     const senderName = data.senderNick || 'Unknown';
     const isDirect = data.conversationType === '1';
-    return enqueueConversationTask(data.conversationId, () =>
+    return enqueueConversationTask(conversationQueue, data.conversationId, () =>
         withDingTalkConversationContext(
             {
                 conversationId: data.conversationId,
@@ -2107,34 +2088,31 @@ async function runAgentInvokeStage(
         }
     }
 
-    const enforceMemorySearch = hasMemoryRecallIntent(content.text);
-    if (enforceMemorySearch) {
+    const shouldInjectStartupMemory = !hydratedThreadIds.has(session.threadId) && session.messageHistory.length === 0;
+    const preparedUserMessages = await prepareConversationUserMessages({
+        userText: content.text,
+        workspacePath: memoryWorkspacePath,
+        scopeKey: scope.key,
+        includeStartupMemory: shouldInjectStartupMemory,
+    });
+    if (preparedUserMessages.enforceMemorySearch) {
         log.info('[DingTalk] Memory recall intent detected, enforce memory_search preflight');
     }
-    const shouldInjectStartupMemory = !hydratedThreadIds.has(session.threadId) && session.messageHistory.length === 0;
     const shouldInjectBootstrap = !hydratedThreadIds.has(session.threadId);
-    const startupMemoryInjection = shouldInjectStartupMemory
-        ? await buildSessionStartupMemoryInjection({
-            workspacePath: memoryWorkspacePath,
-            scopeKey: scope.key,
-        })
-        : null;
     const bootstrapPromptMessage = shouldInjectBootstrap
         ? await buildPromptBootstrapMessage({
             workspacePath: memoryWorkspacePath,
             scopeKey: scope.key,
         })
         : null;
-    if (startupMemoryInjection) {
-        log.info(`[DingTalk] Startup memory injection enabled for ${session.threadId}, chars=${startupMemoryInjection.length}`);
+    if (preparedUserMessages.startupMemoryInjection) {
+        log.info(`[DingTalk] Startup memory injection enabled for ${session.threadId}, chars=${preparedUserMessages.startupMemoryInjection.length}`);
     }
     if (bootstrapPromptMessage) {
         log.info(`[DingTalk] Prompt bootstrap injected for ${session.threadId}, chars=${bootstrapPromptMessage.content.length}, scope=${scope.key}`);
     }
-    const invocationMessages = buildAgentInvocationMessages(session, content.text, {
-        enforceMemorySearch,
-        startupMemoryInjection,
-        bootstrapPromptMessage,
+    const invocationMessages = buildAgentInvocationMessages(session, preparedUserMessages.userMessages, {
+        bootstrapMessages: bootstrapPromptMessage ? [bootstrapPromptMessage] : [],
     });
     const agentConfig = {
         configurable: { thread_id: session.threadId },
@@ -2636,18 +2614,6 @@ async function executeAutoCompact(
         log.error('[DingTalk] Compaction failed:', String(error));
         return flushState;
     }
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-    let timer: NodeJS.Timeout | null = null;
-    const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-    });
-    return Promise.race([promise, timeout]).finally(() => {
-        if (timer) {
-            clearTimeout(timer);
-        }
-    });
 }
 
 export async function flushSessionsOnShutdown(params: {

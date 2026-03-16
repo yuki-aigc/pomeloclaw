@@ -48,10 +48,10 @@ import type { RuntimeLogWriter } from './log/runtime.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand, parseSkillSlashCommand } from './skills/index.js';
 import { executeCronSlashCommand } from './cron/slash.js';
 import {
-    buildSessionStartupMemoryInjection,
-    buildUserMessagesWithMemoryPolicy,
-    hasMemoryRecallIntent,
-} from './prompt/memory-policy.js';
+    enqueueConversationTask,
+    prepareConversationUserMessages,
+    withTimeout,
+} from './channels/conversation-utils.js';
 
 const conversationQueue = new Map<string, Promise<void>>();
 
@@ -86,32 +86,6 @@ function composeInboundWebText(text: string, mediaContext: string | null): strin
         return `请结合以下附件内容进行处理。\n\n${normalizedMedia}`;
     }
     return '';
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
-    let timer: NodeJS.Timeout | null = null;
-    const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-    });
-    return Promise.race([promise, timeout]).finally(() => {
-        if (timer) {
-            clearTimeout(timer);
-        }
-    });
-}
-
-function enqueueConversationTask(
-    conversationId: string,
-    task: () => Promise<void>,
-): Promise<void> {
-    const previous = conversationQueue.get(conversationId) ?? Promise.resolve();
-    const next = previous.then(task, task).finally(() => {
-        if (conversationQueue.get(conversationId) === next) {
-            conversationQueue.delete(conversationId);
-        }
-    });
-    conversationQueue.set(conversationId, next);
-    return next;
 }
 
 function createWebThreadId(conversationId: string): string {
@@ -567,7 +541,7 @@ export async function startWebService(options?: {
                 throw new Error('Web adapter is not ready');
             }
 
-            await enqueueConversationTask(message.conversationId, async () => {
+            await enqueueConversationTask(conversationQueue, message.conversationId, async () => {
                 await conversationRuntime.reloadIfNeeded();
                 currentAgent = conversationRuntime.getAgent();
                 const conversationState = getOrCreateConversationState(conversationStates, message.conversationId);
@@ -633,23 +607,22 @@ export async function startWebService(options?: {
                 const compactionModel = await getCompactionModel();
                 const scope = resolveMemoryScope(config.agent.memory.session_isolation);
                 conversationState.scope = scope;
-                const enforceMemorySearch = hasMemoryRecallIntent(userText);
-                if (enforceMemorySearch) {
+                const shouldInjectStartupMemory = !conversationState.startupMemoryInjected;
+                const preparedUserMessages = await prepareConversationUserMessages({
+                    userText,
+                    workspacePath: memoryWorkspacePath,
+                    scopeKey: scope.key,
+                    includeStartupMemory: shouldInjectStartupMemory,
+                });
+                if (preparedUserMessages.enforceMemorySearch) {
                     log.info(`[Web] Memory recall intent detected, enforce memory_search preflight (${message.conversationId})`);
                 }
-                const shouldInjectStartupMemory = !conversationState.startupMemoryInjected;
-                const startupMemoryInjection = shouldInjectStartupMemory
-                    ? await buildSessionStartupMemoryInjection({
-                        workspacePath: memoryWorkspacePath,
-                        scopeKey: scope.key,
-                    })
-                    : null;
                 if (shouldInjectStartupMemory) {
                     conversationState.startupMemoryInjected = true;
                 }
-                if (startupMemoryInjection) {
+                if (preparedUserMessages.startupMemoryInjection) {
                     log.info(
-                        `[Web] Startup memory injection enabled for ${message.conversationId}, chars=${startupMemoryInjection.length}, scope=${scope.key}`
+                        `[Web] Startup memory injection enabled for ${message.conversationId}, chars=${preparedUserMessages.startupMemoryInjection.length}, scope=${scope.key}`
                     );
                 }
                 await persistWebTurn({
@@ -684,12 +657,7 @@ export async function startWebService(options?: {
                     scopeKey: scope.key,
                 });
 
-                invocationMessages.push(
-                    ...buildUserMessagesWithMemoryPolicy(userText, {
-                        enforceMemorySearch,
-                        startupMemoryInjection,
-                    }),
-                );
+                invocationMessages.push(...preparedUserMessages.userMessages);
 
                 await adapter.sendStreamEvent({
                     inbound: message,
