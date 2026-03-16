@@ -67,8 +67,8 @@ function formatSlashChannel(job: CronJob): string {
 }
 
 function summarizeJobPurpose(job: CronJob): string {
-    if (job.name.includes('每日记忆归档')) {
-        return '自动归档过去 24 小时的对话记忆，提取关键事实、告警分析、处置动作等，并识别可复用的团队知识';
+    if (job.name.includes('每日记忆归档') || job.name.includes('每三天记忆归档')) {
+        return '自动归档过去 72 小时的对话记忆，提取关键事实、告警分析、处置动作等，并识别可复用的团队知识';
     }
 
     const description = job.description?.trim();

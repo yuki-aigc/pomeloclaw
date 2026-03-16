@@ -44,9 +44,9 @@ import {
 import { createSkillDirectoryMonitor } from './skills/index.js';
 import { resolveMemoryScope } from './middleware/memory-scope.js';
 
-const AUTO_MEMORY_SAVE_JOB_NAME = '系统任务：每日记忆归档(04:00)';
+const AUTO_MEMORY_SAVE_JOB_NAME = '系统任务：每三天记忆归档(04:00)';
 const AUTO_MEMORY_SAVE_JOB_MARKER = '[system:auto-memory-save-4am:v1]';
-const AUTO_MEMORY_SAVE_JOB_CRON_EXPR = '0 4 * * *';
+const AUTO_MEMORY_SAVE_JOB_CRON_EXPR = '0 4 */3 * *';
 const DEFAULT_STREAM_LOCK_WAIT_MS = 120_000;
 const STREAM_LOCK_RETRY_MS = 1_000;
 
@@ -56,24 +56,29 @@ function buildAutoMemorySaveJobDescription(): string {
 
 export function buildAutoMemorySaveJobPrompt(): string {
     return [
-        '请执行每日记忆归档任务。',
+        '请执行每三天一次的记忆归档任务。',
         '要求：',
-        '1. 先调用 memory_search，检索“最近24小时 / 今天 / 昨天”相关的记忆与会话事件。',
-        '2. 再回顾最近24小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。',
+        '1. 先调用 memory_search，检索“最近72小时 / 最近三天 / 今天 / 昨天 / 前天”相关的记忆与会话事件。',
+        '2. 再回顾最近72小时对话中的关键事实、告警分析、定位结论、处置动作、遗留风险与待办。',
         '3. 输出内容必须使用以下固定结构；没有信息时写“无”：',
         WORKING_SUMMARY_SCHEMA,
         '4. 输出内容必须满足以下要求：',
         ...WORKING_SUMMARY_REQUIREMENTS.map((item, index) => `   ${index + 1}) ${item}`),
         '5. 调用 memory_save，target 必须是 daily；content 直接填写上面的结构化摘要正文，不要包“对话摘要:”前缀。',
         '6. 在 daily 归档完成后，检查本次总结里是否存在可跨会话复用的团队知识，例如：标准流程、稳定约束、通用排障经验、明确结论、团队共识。',
-        '7. 如果存在上述可复用知识，再调用 memory_save_team：',
+        '7. 对每一条准备晋升的团队知识，必须先再次调用 memory_search，检索 main scope 中是否已有相同或高度相近的团队长期记忆。',
+        '8. 如果检索到相近条目：',
+        '   - 优先复用已存在条目的标题，不要仅仅换个说法再新建一条',
+        '   - 将本次新增内容作为补充信息，调用 memory_save_team 合并到同一条长期记忆',
+        '9. 只有在确认 main scope 中没有相近团队记忆时，才允许创建新的长期团队记忆标题。',
+        '10. 如果存在上述可复用知识，再调用 memory_save_team：',
         '   - 优先使用 target="long-term"',
         '   - 使用结构化字段填写：title / summary / applicability / steps / constraints / evidence / tags',
         '   - steps / constraints / evidence / tags 优先传字符串数组；若是多行文本也要确保每行只包含一个要点',
         '   - summary 只保留可复用知识本身，不要整段复制 daily 摘要',
         '   - reason 简洁写明晋升原因，例如“标准流程”/“通用排障经验”/“团队共识”',
-        '8. 若没有足够稳定、可复用的团队知识，则跳过 memory_save_team，不要为了调用而调用。',
-        '9. 完成后在回复末尾明确输出: memory_saved。',
+        '11. 若没有足够稳定、可复用的团队知识，则跳过 memory_save_team，不要为了调用而调用。',
+        '12. 完成后在回复末尾明确输出: memory_saved。',
         '注意：若你没有先调用 memory_save 就结束任务，视为失败。',
     ].join('\n');
 }
@@ -520,7 +525,7 @@ async function ensureAutoMemorySaveJob(params: {
 
     const defaultTarget = config.dingtalk?.cron?.defaultTarget?.trim();
     if (!defaultTarget) {
-        log.warn('[Cron] skip auto memory-save(04:00): dingtalk.cron.defaultTarget is empty');
+        log.warn('[Cron] skip auto memory-save(every-3-days 04:00): dingtalk.cron.defaultTarget is empty');
         return;
     }
 
@@ -528,7 +533,7 @@ async function ensureAutoMemorySaveJob(params: {
     const desiredPrompt = buildAutoMemorySaveJobPrompt();
     const desiredTimezone = config.cron.timezone;
     const desiredUseMarkdown = config.dingtalk?.cron?.useMarkdown ?? true;
-    const desiredTitle = config.dingtalk?.cron?.title || '每日记忆归档';
+    const desiredTitle = config.dingtalk?.cron?.title || '每三天记忆归档';
 
     const jobs = await cronService.listJobs();
     const matched = jobs.filter((job) => isAutoMemorySaveJob(job));

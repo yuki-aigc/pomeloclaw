@@ -6,6 +6,8 @@ import { extractMessageContent } from './channels/dingtalk/handler.js';
 test('auto memory save cron prompt uses the shared working summary schema', () => {
     const prompt = buildAutoMemorySaveJobPrompt();
 
+    assert.match(prompt, /每三天一次的记忆归档任务/);
+    assert.match(prompt, /最近72小时 \/ 最近三天 \/ 今天 \/ 昨天 \/ 前天/);
     assert.match(prompt, /## 当前任务/);
     assert.match(prompt, /## 最新用户请求/);
     assert.match(prompt, /## 已完成进展/);
@@ -16,6 +18,10 @@ test('auto memory save cron prompt uses the shared working summary schema', () =
     assert.match(prompt, /不要包“对话摘要:”前缀/);
     assert.match(prompt, /memory_save/);
     assert.match(prompt, /memory_save_team/);
+    assert.match(prompt, /对每一条准备晋升的团队知识，必须先再次调用 memory_search/);
+    assert.match(prompt, /检索 main scope 中是否已有相同或高度相近的团队长期记忆/);
+    assert.match(prompt, /优先复用已存在条目的标题/);
+    assert.match(prompt, /只有在确认 main scope 中没有相近团队记忆时，才允许创建新的长期团队记忆标题/);
     assert.match(prompt, /标准流程|通用排障经验|团队共识/);
     assert.match(prompt, /memory_saved/);
 });
