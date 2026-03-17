@@ -32,14 +32,11 @@ import { AICardStatus } from './types.js';
 import { hasPendingApprovalForKey, tryHandleExecApprovalReply } from './approvals.js';
 import {
     createMemoryFlushState,
-    buildMemoryFlushPrompt,
-    isNoReplyResponse,
     markFlushCompleted,
     recordSessionEvent,
     setTotalTokens,
     shouldTriggerMemoryFlush,
     type MemoryFlushState,
-    updateTokenCountWithModel,
 } from '../../middleware/index.js';
 import {
     compactMessages,
@@ -73,6 +70,18 @@ import {
     prepareConversationUserMessages,
     withTimeout,
 } from '../conversation-utils.js';
+import {
+    consumeAgentStreamEvents,
+    executeMemoryFlushCore,
+    pickFinalStreamResponse,
+    pickInvokeResponse,
+} from '../agent-execution.js';
+import { applyTurnTokenAccounting } from '../turn-accounting.js';
+import {
+    isLikelyStructuredToolPayload,
+    isLikelyToolCallResidue,
+    sanitizeUserFacingText as sanitizeAssistantReplyText,
+} from '../streaming.js';
 
 // Session state cache (scopeKey -> SessionState)
 const sessionCache = new Map<string, SessionState>();
@@ -102,14 +111,6 @@ const DINGTALK_FILE_TAG_PATTERN = /<dingtalk-file\s+path=(?:"([^"]+)"|'([^']+)')
 const FILE_OUTPUT_LINE_PATTERN = /^FILE_OUTPUT:\s*(.+)$/gim;
 const USER_FILE_TRANSFER_INTENT_PATTERN = /(回传|发送|发我|发给我|传给我|给我|下载|附件|文件)/;
 const WORKSPACE_PATH_HINT_PATTERN = /(^|[\s"'`(（\[])(\.?\/?workspace\/[^\s"'`)\]）>]+)/g;
-const MINIMAX_TOOL_CALL_TAG_PATTERN = /<\s*minimax:tool_call\b[\s\S]*?(?:<\/\s*minimax:tool_call\s*>|$)/gi;
-const MINIMAX_TOOL_CALL_CLOSE_TAG_PATTERN = /<\/\s*minimax:tool_call\s*>/gi;
-const GENERIC_TOOL_CALL_TAG_PATTERN = /<\s*\/?\s*tool_call\b[^>]*>/gi;
-const TOOL_CALL_HINT_PATTERN = /\[\s*调用工具:[^\]\n]*\]/g;
-const TOOL_CALL_INLINE_NAME_PATTERN = /\[\s*调用\s+name=["'][^"']+["'][^\]\n]*\]/g;
-const TOOL_CALL_TRAIL_PATTERN = /\[\s*调用(?:工具|参数)?:[^\n]*/g;
-const TOOL_CALL_RESIDUE_PATTERN = /(调用工具|调用参数|tool_call|minimax:tool_call|^\s*调用\s+name=|^\s*name\s*=\s*["'])/i;
-
 const TEXT_MIME_HINTS = [
     'text/',
     'application/json',
@@ -623,237 +624,6 @@ function collectWorkspacePathHints(text: string): string[] {
         }
     }
     return paths;
-}
-
-function sanitizeAssistantReplyText(text: string): string {
-    if (!text) return '';
-    let cleaned = text;
-    cleaned = cleaned.replace(MINIMAX_TOOL_CALL_TAG_PATTERN, '');
-    cleaned = cleaned.replace(MINIMAX_TOOL_CALL_CLOSE_TAG_PATTERN, '');
-    cleaned = cleaned.replace(GENERIC_TOOL_CALL_TAG_PATTERN, '');
-    cleaned = cleaned.replace(TOOL_CALL_HINT_PATTERN, '');
-    cleaned = cleaned.replace(TOOL_CALL_INLINE_NAME_PATTERN, '');
-    cleaned = cleaned.replace(TOOL_CALL_TRAIL_PATTERN, '');
-    cleaned = cleaned
-        .split('\n')
-        .filter((line) => !TOOL_CALL_RESIDUE_PATTERN.test(line.trim()))
-        .join('\n');
-    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-    return cleaned.trim();
-}
-
-function extractTextBlocks(content: unknown): string {
-    if (typeof content === 'string') {
-        return content.trim();
-    }
-    if (content && typeof content === 'object' && !Array.isArray(content)) {
-        const obj = content as {
-            text?: unknown;
-            content?: unknown;
-            kwargs?: { text?: unknown; content?: unknown };
-        };
-        if (typeof obj.text === 'string' && obj.text.trim()) {
-            return obj.text.trim();
-        }
-        if (obj.content !== undefined) {
-            return extractTextBlocks(obj.content);
-        }
-        if (obj.kwargs) {
-            if (obj.kwargs.content !== undefined) {
-                return extractTextBlocks(obj.kwargs.content);
-            }
-            if (obj.kwargs.text !== undefined) {
-                return extractTextBlocks(obj.kwargs.text);
-            }
-        }
-        return '';
-    }
-    if (!Array.isArray(content)) {
-        return '';
-    }
-    const blocks: string[] = [];
-    for (const item of content) {
-        if (typeof item === 'string') {
-            blocks.push(item);
-            continue;
-        }
-        if (!item || typeof item !== 'object') {
-            continue;
-        }
-        const text = (item as { text?: unknown }).text;
-        if (typeof text === 'string' && text.trim()) {
-            blocks.push(text);
-        }
-    }
-    return blocks.join('\n').trim();
-}
-
-function extractReplyTextFromEventData(data: unknown, depth: number = 0): string {
-    if (!data || depth > 3) {
-        return '';
-    }
-    if (typeof data === 'string' || Array.isArray(data)) {
-        return extractTextBlocks(data);
-    }
-    if (typeof data !== 'object') {
-        return '';
-    }
-
-    const record = data as Record<string, unknown> & { kwargs?: { content?: unknown; output?: unknown; messages?: unknown } };
-    const directContent = extractTextBlocks(record.content !== undefined ? record.content : record.kwargs?.content);
-    if (directContent) {
-        return directContent;
-    }
-
-    const messages = Array.isArray(record.messages)
-        ? record.messages
-        : Array.isArray(record.kwargs?.messages)
-            ? record.kwargs.messages
-            : null;
-    if (messages && messages.length > 0) {
-        const lastMessage = messages[messages.length - 1] as { content?: unknown } | undefined;
-        if (lastMessage) {
-            const messageContent = extractTextBlocks(lastMessage.content);
-            if (messageContent) {
-                return messageContent;
-            }
-        }
-    }
-
-    if ('output' in record) {
-        return extractReplyTextFromEventData(record.output, depth + 1);
-    }
-    if (record.kwargs && 'output' in record.kwargs) {
-        return extractReplyTextFromEventData(record.kwargs.output, depth + 1);
-    }
-    return '';
-}
-
-function getMessageRole(message: unknown): string {
-    if (!message || typeof message !== 'object') {
-        return '';
-    }
-    const msg = message as {
-        _getType?: unknown;
-        type?: unknown;
-        role?: unknown;
-        kwargs?: { type?: unknown; role?: unknown };
-    };
-    if (typeof msg._getType === 'function') {
-        try {
-            const role = (msg._getType as () => string)();
-            if (typeof role === 'string') {
-                return role.toLowerCase();
-            }
-        } catch {
-            // ignore
-        }
-    }
-    if (typeof msg.type === 'string' && msg.type.trim()) {
-        return msg.type.toLowerCase();
-    }
-    if (typeof msg.role === 'string' && msg.role.trim()) {
-        return msg.role.toLowerCase();
-    }
-    if (msg.kwargs) {
-        if (typeof msg.kwargs.type === 'string' && msg.kwargs.type.trim()) {
-            return msg.kwargs.type.toLowerCase();
-        }
-        if (typeof msg.kwargs.role === 'string' && msg.kwargs.role.trim()) {
-            return msg.kwargs.role.toLowerCase();
-        }
-    }
-    return '';
-}
-
-function isLikelyToolCallResidue(text: string): boolean {
-    const cleaned = sanitizeAssistantReplyText(text);
-    if (!cleaned) return true;
-    if (TOOL_CALL_RESIDUE_PATTERN.test(cleaned)) return true;
-    if (/(minimax:tool_call|tool_call)/i.test(cleaned)) return true;
-    if (/^[\s\]\[}{(),.:;'"`\\/-]+$/.test(cleaned)) return true;
-    const total = cleaned.length;
-    const readable = (cleaned.match(/[A-Za-z0-9\u4e00-\u9fa5]/g) || []).length;
-    const braces = (cleaned.match(/[{}\[\]]/g) || []).length;
-    if (total >= 40 && readable / total < 0.15 && braces / total > 0.3) {
-        return true;
-    }
-    return false;
-}
-
-function isLikelyStructuredToolPayload(text: string): boolean {
-    const trimmed = text.trim();
-    if (!trimmed) return false;
-
-    const fenced = trimmed.match(/^```(?:json|javascript|js)?\s*([\s\S]*?)\s*```$/i);
-    const body = (fenced?.[1] || trimmed).trim();
-    if (!body) return false;
-    if (!(body.startsWith('{') || body.startsWith('['))) {
-        return false;
-    }
-
-    const compact = body.replace(/\s+/g, ' ');
-    const kvLike = (compact.match(/":/g) || []).length;
-    const objLike = (compact.match(/,\s*"/g) || []).length;
-    const weatherLike = /(forecasts?|dayweather|nightweather|daytemp|nighttemp|temperature|humidity|wind|province|city|adcode)/i.test(compact);
-
-    return kvLike >= 4 || objLike >= 4 || weatherLike;
-}
-
-function extractBestReadableReplyFromMessages(messages: unknown[]): string {
-    let fallback = '';
-
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-        const message = messages[i];
-        if (!message || typeof message !== 'object') {
-            continue;
-        }
-        const role = getMessageRole(message);
-        const msg = message as { content?: unknown; kwargs?: { content?: unknown } };
-        const content = extractTextBlocks(msg.content !== undefined ? msg.content : msg.kwargs?.content);
-        const cleaned = sanitizeAssistantReplyText(content);
-        if (!cleaned) {
-            continue;
-        }
-        if (!fallback) {
-            fallback = cleaned;
-        }
-        if ((role === 'ai' || role === 'assistant') && !isLikelyToolCallResidue(cleaned)) {
-            return cleaned;
-        }
-    }
-
-    if (fallback && !isLikelyToolCallResidue(fallback)) {
-        return fallback;
-    }
-    return '';
-}
-
-function pickBestUserFacingResponse(
-    candidates: string[],
-    options?: {
-        sawToolCall?: boolean;
-    }
-): string {
-    const sawToolCall = options?.sawToolCall === true;
-    let fallback = '';
-    for (const candidate of candidates) {
-        const cleaned = sanitizeAssistantReplyText(candidate);
-        if (!cleaned) {
-            continue;
-        }
-        if (isLikelyToolCallResidue(cleaned)) {
-            continue;
-        }
-        if (!fallback) {
-            fallback = cleaned;
-        }
-        if (sawToolCall && isLikelyStructuredToolPayload(cleaned)) {
-            continue;
-        }
-        return cleaned;
-    }
-    return fallback;
 }
 
 function collectReplyPathHints(text: string): { cleanedText: string; candidates: string[] } {
@@ -2009,14 +1779,14 @@ async function runAgentInvokeStage(
     const compactionConfig = config.agent.compaction;
 
     // Update token count with user input
-    const tokensBeforeInput = flushState.totalTokens;
-    flushState = await updateTokenCountWithModel(
+    const inputAccounting = await applyTurnTokenAccounting({
         flushState,
-        content.text,
-        compactionModel,
+        text: content.text,
+        model: compactionModel,
         compactionConfig,
-    );
-    session.totalInputTokens += Math.max(0, flushState.totalTokens - tokensBeforeInput);
+    });
+    flushState = inputAccounting.flushState;
+    session.totalInputTokens += inputAccounting.tokenDelta;
     await persistSessionEvent({
         role: 'user',
         content: content.text,
@@ -2122,10 +1892,6 @@ async function runAgentInvokeStage(
     log.debug(`[DingTalk] Invoking agent with thread_id: ${session.threadId}`);
 
     let fullResponse = '';
-    let rawStreamResponse = '';
-    let finalOutputFromEvents = '';
-    let lastToolOutputFromEvents = '';
-    let sawToolCall = false;
     let responseFiles: string[] = [];
     let shouldSendMarkdownReply = false;
     const workspaceRoot = memoryWorkspacePath;
@@ -2141,11 +1907,6 @@ async function runAgentInvokeStage(
     if (currentCard) {
         // Card mode: use streaming
         log.info('[DingTalk] Starting streamEvents...');
-
-        const eventStream = ctx.agent.streamEvents(
-            { messages: invocationMessages },
-            { ...agentConfig, version: 'v2' }
-        );
 
         log.info('[DingTalk] EventStream created, waiting for events...');
 
@@ -2212,81 +1973,42 @@ async function runAgentInvokeStage(
             }
         };
 
-        for await (const event of eventStream) {
-            eventCount++;
-            if (eventCount <= 3 || eventCount % 10 === 0) {
-                log.debug(`[DingTalk] Event #${eventCount}: ${event.event}`);
-            }
-
-            if (event.event === 'on_chat_model_stream') {
-                const chunk = event.data?.chunk;
-                if (chunk?.content) {
-                    let text = '';
-                    if (typeof chunk.content === 'string') {
-                        text = chunk.content;
-                    } else if (Array.isArray(chunk.content)) {
-                        for (const item of chunk.content) {
-                            if (item.type === 'text' && item.text) {
-                                text += item.text;
-                            }
-                        }
-                    }
-
-                    rawStreamResponse += text;
-                    const cleanedCandidate = sanitizeAssistantReplyText(rawStreamResponse);
-                    const shouldSuppressStreamCandidate = sawToolCall && (
-                        isLikelyToolCallResidue(cleanedCandidate) || isLikelyStructuredToolPayload(cleanedCandidate)
-                    );
-                    if (!shouldSuppressStreamCandidate) {
-                        fullResponse = cleanedCandidate;
-                    }
-
-                    // Throttle stream updates to avoid rate limiting
-                    scheduleFlush(false);
+        const streamState = await consumeAgentStreamEvents({
+            eventStream: ctx.agent.streamEvents(
+                { messages: invocationMessages },
+                { ...agentConfig, version: 'v2' }
+            ),
+            sanitizeText: sanitizeAssistantReplyText,
+            shouldAcceptVisibleText: (candidate, state) => !(
+                state.sawToolCall
+                && (
+                    isLikelyToolCallResidue(candidate)
+                    || isLikelyStructuredToolPayload(candidate)
+                )
+            ),
+            onEvent: async (event) => {
+                eventCount += 1;
+                if (eventCount <= 3 || eventCount % 10 === 0) {
+                    log.debug(`[DingTalk] Event #${eventCount}: ${event.event}`);
                 }
-            } else if (event.event === 'on_tool_start') {
-                const toolName = event.name;
-                sawToolCall = true;
-                log.info(`[DingTalk] Tool started: ${toolName}`);
-            } else if (event.event === 'on_tool_end') {
-                const toolOutput = sanitizeAssistantReplyText(extractReplyTextFromEventData(event.data));
-                if (toolOutput) {
-                    lastToolOutputFromEvents = toolOutput;
-                }
-            } else if (event.event === 'on_chat_model_end' || event.event === 'on_chain_end') {
-                const extracted = sanitizeAssistantReplyText(extractReplyTextFromEventData(event.data));
-                if (extracted && !isLikelyToolCallResidue(extracted) && !isLikelyStructuredToolPayload(extracted)) {
-                    finalOutputFromEvents = extracted;
-                }
-                const eventData = event.data as { output?: { messages?: unknown[] }; messages?: unknown[] } | undefined;
-                const outputMessages = Array.isArray(eventData?.output?.messages)
-                    ? eventData.output.messages
-                    : Array.isArray(eventData?.messages)
-                        ? eventData.messages
-                        : null;
-                if (outputMessages) {
-                    const bestFromMessages = extractBestReadableReplyFromMessages(outputMessages);
-                    if (bestFromMessages) {
-                        finalOutputFromEvents = bestFromMessages;
-                    }
-                }
-            }
-        }
-
-        fullResponse = pickBestUserFacingResponse([
-            finalOutputFromEvents,
-            fullResponse,
-            rawStreamResponse,
-        ], {
-            sawToolCall,
+            },
+            onVisibleResponseUpdated: async ({ candidate }) => {
+                fullResponse = candidate;
+                scheduleFlush(false);
+            },
+            onToolStart: async (event) => {
+                log.info(`[DingTalk] Tool started: ${event.name}`);
+            },
         });
+
+        fullResponse = pickFinalStreamResponse(streamState);
         if (!fullResponse) {
             log.warn(
                 `[DingTalk] Stream reply did not produce user-facing text. ` +
-                `tool_called=${sawToolCall} raw_len=${rawStreamResponse.length} ` +
-                `chain_len=${finalOutputFromEvents.length} tool_len=${lastToolOutputFromEvents.length}`
+                `tool_called=${streamState.sawToolCall} raw_len=${streamState.rawStreamResponse.length} ` +
+                `chain_len=${streamState.finalOutputFromEvents.length} tool_len=${streamState.lastToolOutputFromEvents.length}`
             );
-            if (sawToolCall) {
+            if (streamState.sawToolCall) {
                 fullResponse = '我已完成工具查询，但结果整理失败。请让我重试一次，我会给你结构化结论。';
             }
         }
@@ -2347,18 +2069,7 @@ async function runAgentInvokeStage(
             agentConfig
         );
 
-        // Extract response
-        const messages = result.messages;
-        if (Array.isArray(messages) && messages.length > 0) {
-            const lastMessage = messages[messages.length - 1];
-            fullResponse = typeof lastMessage.content === 'string'
-                ? lastMessage.content
-                : JSON.stringify(lastMessage.content);
-        }
-        fullResponse = pickBestUserFacingResponse([
-            fullResponse,
-            Array.isArray(messages) ? extractBestReadableReplyFromMessages(messages) : '',
-        ]);
+        fullResponse = pickInvokeResponse(result);
 
         if (!fullResponse) {
             fullResponse = '抱歉，我没有生成有效的回复。';
@@ -2443,15 +2154,16 @@ async function runPersistenceStage(
     } = stage;
     const { config, log } = ctx;
     const fullResponse = invokeStage.fullResponse;
-    let flushState = await updateTokenCountWithModel(
-        invokeStage.flushState,
-        fullResponse,
-        invokeStage.compactionModel,
-        invokeStage.compactionConfig,
-    );
+    const outputAccounting = await applyTurnTokenAccounting({
+        flushState: invokeStage.flushState,
+        text: fullResponse,
+        model: invokeStage.compactionModel,
+        compactionConfig: invokeStage.compactionConfig,
+    });
+    let flushState = outputAccounting.flushState;
 
     // Update token count and message history
-    session.totalOutputTokens += Math.max(0, flushState.totalTokens - invokeStage.flushState.totalTokens);
+    session.totalOutputTokens += outputAccounting.tokenDelta;
     await persistSessionEvent({
         role: 'assistant',
         content: fullResponse,
@@ -2506,37 +2218,21 @@ async function executeMemoryFlush(
     options?: { preserveTokenCount?: boolean }
 ): Promise<MemoryFlushState> {
     log.info('[DingTalk] Executing memory flush...');
-    const tokensBeforeFlush = flushState.totalTokens;
-
     try {
-        const result = await agent.invoke(
-            {
-                messages: [
-                    { role: 'user', content: buildMemoryFlushPrompt() },
-                ],
-            },
-            {
-                configurable: { thread_id: session.threadId },
-                recursionLimit: 10,
-            }
-        );
-
-        const messages = result.messages;
-        if (Array.isArray(messages) && messages.length > 0) {
-            const lastMessage = messages[messages.length - 1];
-            const content = typeof lastMessage.content === 'string' ? lastMessage.content : '';
-            if (isNoReplyResponse(content)) {
-                log.debug('[DingTalk] Memory flush completed (no reply needed)');
-            } else {
-                log.debug('[DingTalk] Memory flush completed');
-            }
+        const result = await executeMemoryFlushCore({
+            agent,
+            threadId: session.threadId,
+            recursionLimit: 10,
+            flushState,
+            compactionConfig,
+            preserveTokenCount: options?.preserveTokenCount,
+        });
+        if (result.noReply) {
+            log.debug('[DingTalk] Memory flush completed (no reply needed)');
+        } else {
+            log.debug('[DingTalk] Memory flush completed');
         }
-
-        const nextState = markFlushCompleted(flushState);
-        if (options?.preserveTokenCount) {
-            return setTotalTokens(nextState, tokensBeforeFlush, compactionConfig);
-        }
-        return nextState;
+        return result.nextState;
     } catch (error) {
         log.error('[DingTalk] Memory flush failed:', String(error));
         return flushState;

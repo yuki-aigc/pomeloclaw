@@ -9,14 +9,10 @@ import { createChatModel, getActiveModelAlias, getActiveModelEntry, listConfigur
 import { createWebChannelAdapter, type WebLogger, type WebChannelAdapter } from './channels/web/index.js';
 import { GatewayService } from './channels/gateway/index.js';
 import {
-    buildMemoryFlushPrompt,
     createMemoryFlushState,
-    isNoReplyResponse,
-    markFlushCompleted,
     recordSessionEvent,
     recordSessionTranscript,
     shouldTriggerMemoryFlush,
-    updateTokenCountWithModel,
     type MemoryFlushState,
 } from './middleware/index.js';
 import { resolveMemoryScope, withForcedMemoryScope, type MemoryScope } from './middleware/memory-scope.js';
@@ -30,12 +26,8 @@ import {
 } from './channels/runtime-entry.js';
 import { formatTokenCount, getCompactionHardContextBudget, getContextUsageInfo, getEffectiveAutoCompactThreshold } from './compaction/index.js';
 import {
-    extractBestReadableReplyFromMessages,
-    extractReplyTextFromEventData,
-    extractStreamChunkText,
     isLikelyStructuredToolPayload,
     isLikelyToolCallResidue,
-    pickBestUserFacingResponse,
     sanitizeUserFacingText,
 } from './channels/streaming.js';
 import {
@@ -52,6 +44,12 @@ import {
     prepareConversationUserMessages,
     withTimeout,
 } from './channels/conversation-utils.js';
+import {
+    consumeAgentStreamEvents,
+    executeMemoryFlushCore,
+    pickFinalStreamResponse,
+} from './channels/agent-execution.js';
+import { applyTurnTokenAccounting } from './channels/turn-accounting.js';
 
 const conversationQueue = new Map<string, Promise<void>>();
 
@@ -374,25 +372,20 @@ async function executeWebMemoryFlush(params: {
     try {
         const result = await withForcedMemoryScope(
             params.scope,
-            () => params.agent.invoke(
-                {
-                    messages: [{ role: 'user', content: buildMemoryFlushPrompt() }],
-                },
-                {
-                    configurable: { thread_id: params.state.threadId },
-                    recursionLimit: params.config.agent.recursion_limit,
-                    version: 'v2',
-                },
-            ),
+            () => executeMemoryFlushCore({
+                agent: params.agent,
+                threadId: params.state.threadId,
+                recursionLimit: params.config.agent.recursion_limit,
+                flushState: params.state.flushState,
+                compactionConfig: params.config.agent.compaction,
+                version: 'v2',
+            }),
         );
-        const messages = Array.isArray(result.messages) ? result.messages : [];
-        const lastMessage = messages[messages.length - 1];
-        const content = typeof lastMessage?.content === 'string' ? lastMessage.content.trim() : '';
-        if (content && !isNoReplyResponse(content)) {
-            params.log.debug(`[Web] Memory flush returned visible output (${params.conversationId}): ${content.slice(0, 120)}`);
+        if (result.visibleOutput && !result.noReply) {
+            params.log.debug(`[Web] Memory flush returned visible output (${params.conversationId}): ${result.visibleOutput.slice(0, 120)}`);
         }
 
-        params.state.flushState = markFlushCompleted(params.state.flushState);
+        params.state.flushState = result.nextState;
         params.state.threadId = createWebThreadId(params.conversationId);
         params.log.info(`[Web] Memory flush completed, rotated thread for conversation=${params.conversationId}`);
         return true;
@@ -641,14 +634,14 @@ export async function startWebService(options?: {
                         attachmentCount: message.attachments?.length || 0,
                     },
                 });
-                const tokensBeforeInput = conversationState.flushState.totalTokens;
-                conversationState.flushState = await updateTokenCountWithModel(
-                    conversationState.flushState,
-                    userText,
-                    compactionModel,
-                    config.agent.compaction,
-                );
-                conversationState.totalInputTokens += Math.max(0, conversationState.flushState.totalTokens - tokensBeforeInput);
+                const inputAccounting = await applyTurnTokenAccounting({
+                    flushState: conversationState.flushState,
+                    text: userText,
+                    model: compactionModel,
+                    compactionConfig: config.agent.compaction,
+                });
+                conversationState.flushState = inputAccounting.flushState;
+                conversationState.totalInputTokens += inputAccounting.tokenDelta;
 
                 const threadId = conversationState.threadId;
                 const invocationMessages = await conversationRuntime.buildBootstrapMessages({
@@ -671,12 +664,9 @@ export async function startWebService(options?: {
                     },
                 });
 
-                let rawStreamResponse = '';
                 let visibleStreamResponse = '';
                 let processVisibleResponse = '';
                 let fullResponse = '';
-                let finalOutputFromEvents = '';
-                let sawToolCall = false;
                 let processStarted = false;
                 const processBlocks: WebProcessBlock[] = [];
                 let attachments = [];
@@ -750,47 +740,40 @@ export async function startWebService(options?: {
                 };
 
                 try {
-                    const eventStream = currentAgent.streamEvents(
-                        { messages: invocationMessages },
-                        {
-                            configurable: { thread_id: threadId },
-                            recursionLimit: config.agent.recursion_limit,
-                            version: 'v2',
+                    const streamState = await consumeAgentStreamEvents({
+                        eventStream: currentAgent.streamEvents(
+                            { messages: invocationMessages },
+                            {
+                                configurable: { thread_id: threadId },
+                                recursionLimit: config.agent.recursion_limit,
+                                version: 'v2',
+                            },
+                        ),
+                        sanitizeText: sanitizeUserFacingText,
+                        shouldAcceptVisibleText: (candidate, state) => {
+                            if (!state.sawToolCall) {
+                                return true;
+                            }
+                            return !(
+                                isLikelyToolCallResidue(candidate)
+                                || isLikelyStructuredToolPayload(candidate)
+                            );
                         },
-                    );
-
-                    for await (const event of eventStream) {
-                        if (event.event === 'on_chat_model_stream') {
-                            const delta = extractStreamChunkText(event.data?.chunk?.content);
-                            if (!delta) {
-                                continue;
+                        onVisibleResponseUpdated: async ({ candidate, delta, state }) => {
+                            visibleStreamResponse = candidate;
+                            if (!state.sawToolCall) {
+                                return;
                             }
-                            rawStreamResponse += delta;
-                            const sanitizedCandidate = sanitizeUserFacingText(rawStreamResponse);
-                            if (!sanitizedCandidate) {
-                                continue;
-                            }
-                            visibleStreamResponse = sanitizedCandidate;
-                            if (!sawToolCall) {
-                                continue;
-                            }
-
-                            let deltaToProcess = '';
                             if (!processVisibleResponse) {
-                                deltaToProcess = sanitizedCandidate;
-                                processVisibleResponse = sanitizedCandidate;
-                            } else if (sanitizedCandidate.startsWith(processVisibleResponse)) {
-                                deltaToProcess = sanitizedCandidate.slice(processVisibleResponse.length);
-                                processVisibleResponse = sanitizedCandidate;
+                                processVisibleResponse = candidate;
+                            } else {
+                                processVisibleResponse = candidate;
                             }
-                            if (deltaToProcess) {
-                                await emitProcessDelta(deltaToProcess);
+                            if (delta) {
+                                await emitProcessDelta(delta);
                             }
-                            continue;
-                        }
-
-                        if (event.event === 'on_tool_start') {
-                            sawToolCall = true;
+                        },
+                        onToolStart: async (event) => {
                             if (visibleStreamResponse && !processVisibleResponse) {
                                 processVisibleResponse = visibleStreamResponse;
                                 await emitProcessDelta(visibleStreamResponse);
@@ -807,10 +790,8 @@ export async function startWebService(options?: {
                                     timestamp: Date.now(),
                                 },
                             });
-                            continue;
-                        }
-
-                        if (event.event === 'on_tool_end') {
+                        },
+                        onToolEnd: async (event) => {
                             const preview = extractProcessPreview(event.data);
                             await emitProcessToolStep('end', event.name, preview);
                             await adapter.sendStreamEvent({
@@ -823,37 +804,9 @@ export async function startWebService(options?: {
                                     timestamp: Date.now(),
                                 },
                             });
-                            continue;
-                        }
-
-                        if (event.event === 'on_chat_model_end' || event.event === 'on_chain_end') {
-                            const extracted = sanitizeUserFacingText(extractReplyTextFromEventData(event.data));
-                            if (extracted && !isLikelyToolCallResidue(extracted) && !isLikelyStructuredToolPayload(extracted)) {
-                                finalOutputFromEvents = extracted;
-                            }
-
-                            const eventData = event.data as { output?: { messages?: unknown[] }; messages?: unknown[] } | undefined;
-                            const outputMessages = Array.isArray(eventData?.output?.messages)
-                                ? eventData.output.messages
-                                : Array.isArray(eventData?.messages)
-                                    ? eventData.messages
-                                    : null;
-                            if (outputMessages) {
-                                const bestFromMessages = extractBestReadableReplyFromMessages(outputMessages);
-                                if (bestFromMessages) {
-                                    finalOutputFromEvents = bestFromMessages;
-                                }
-                            }
-                        }
-                    }
-
-                    fullResponse = pickBestUserFacingResponse([
-                        finalOutputFromEvents,
-                        sanitizeUserFacingText(rawStreamResponse),
-                        rawStreamResponse,
-                    ], {
-                        sawToolCall,
+                        },
                     });
+                    fullResponse = pickFinalStreamResponse(streamState);
                     attachments = await adapter.registerReplyAttachments(consumeQueuedWebReplyFiles());
 
                     if (!fullResponse && attachments.length > 0) {
@@ -894,14 +847,14 @@ export async function startWebService(options?: {
                             attachmentCount: attachments.length,
                         },
                     });
-                    const tokensBeforeOutput = conversationState.flushState.totalTokens;
-                    conversationState.flushState = await updateTokenCountWithModel(
-                        conversationState.flushState,
-                        fullResponse,
-                        compactionModel,
-                        config.agent.compaction,
-                    );
-                    conversationState.totalOutputTokens += Math.max(0, conversationState.flushState.totalTokens - tokensBeforeOutput);
+                    const outputAccounting = await applyTurnTokenAccounting({
+                        flushState: conversationState.flushState,
+                        text: fullResponse,
+                        model: compactionModel,
+                        compactionConfig: config.agent.compaction,
+                    });
+                    conversationState.flushState = outputAccounting.flushState;
+                    conversationState.totalOutputTokens += outputAccounting.tokenDelta;
                     conversationState.lastUpdatedAt = Date.now();
                     if (shouldTriggerMemoryFlush(conversationState.flushState, config.agent.compaction)) {
                         await executeWebMemoryFlush({
