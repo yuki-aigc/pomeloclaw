@@ -213,6 +213,23 @@ const configSchemaInternal = z.object({
         maxPayloadBytes: z.number().int().positive().optional(),
         pingIntervalMs: z.number().int().nonnegative().optional(),
     }).optional(),
+    hooks: z.object({
+        enabled: z.boolean(),
+        host: z.string().min(1),
+        port: z.number().int().positive(),
+        path: z.string().min(1),
+        authToken: z.string().optional(),
+        debug: z.boolean().optional(),
+        maxPayloadBytes: z.number().int().positive().optional(),
+        maxConcurrentTasks: z.number().int().positive().optional(),
+        taskTtlMs: z.number().int().positive().optional(),
+        shutdownDrainTimeoutMs: z.number().int().positive().optional(),
+        callback: z.object({
+            timeoutMs: z.number().int().positive().optional(),
+            retries: z.number().int().nonnegative().optional(),
+            retryDelayMs: z.number().int().nonnegative().optional(),
+        }).optional(),
+    }).optional(),
 });
 
 export const configSchema = configSchemaInternal;

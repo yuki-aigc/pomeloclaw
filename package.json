@@ -9,6 +9,7 @@
         "dingtalk": "tsx src/dingtalk.ts",
         "ios": "tsx src/ios.ts",
         "web": "tsx src/web.ts",
+        "hooks": "tsx src/hooks.ts",
         "server": "tsx src/server.ts",
         "channels": "tsx src/server.ts",
         "build": "tsc",
@@ -17,6 +18,7 @@
         "start:channels": "node dist/server.js",
         "start:ios": "node dist/ios.js",
         "start:web": "node dist/web.js",
+        "start:hooks": "node dist/hooks.js",
         "typecheck": "tsc --noEmit",
         "test": "tsx --test \"src/**/*.test.ts\"",
         "test:watch": "tsx --test --watch \"src/**/*.test.ts\""

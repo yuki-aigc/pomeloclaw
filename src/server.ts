@@ -1,5 +1,6 @@
 import { loadConfig } from './config.js';
 import { startDingTalkService } from './dingtalk.js';
+import { startHooksService } from './hooks.js';
 import { startIOSService } from './ios.js';
 import { startWebService } from './web.js';
 import { createRuntimeLogWriter } from './log/runtime.js';
@@ -17,7 +18,7 @@ type RunningChannelService = {
     shutdown: () => Promise<void>;
 };
 
-const SUPPORTED_CHANNELS = new Set(['dingtalk', 'ios', 'web']);
+const SUPPORTED_CHANNELS = new Set(['dingtalk', 'ios', 'web', 'hooks']);
 
 function resolveConfiguredChannels(config: ReturnType<typeof loadConfig>): string[] {
     const channels: string[] = [];
@@ -29,6 +30,9 @@ function resolveConfiguredChannels(config: ReturnType<typeof loadConfig>): strin
     }
     if (config.web?.enabled) {
         channels.push('web');
+    }
+    if (config.hooks?.enabled) {
+        channels.push('hooks');
     }
     return channels;
 }
@@ -62,6 +66,7 @@ export async function startServer(): Promise<void> {
     const dingtalkLogWriter = createRuntimeLogWriter({ prefix: 'dingtalk-server' });
     const iosLogWriter = createRuntimeLogWriter({ prefix: 'ios-server' });
     const webLogWriter = createRuntimeLogWriter({ prefix: 'web-server' });
+    const hooksLogWriter = createRuntimeLogWriter({ prefix: 'hooks-server', directory: 'logs/hooks' });
 
     const logInfo = (message: string, ...args: unknown[]) => {
         serverLogWriter.write('INFO', message, args);
@@ -85,6 +90,7 @@ export async function startServer(): Promise<void> {
         logInfo(`[Server] dingtalk logs -> ${dingtalkLogWriter.filePath}`);
         logInfo(`[Server] ios logs -> ${iosLogWriter.filePath}`);
         logInfo(`[Server] web logs -> ${webLogWriter.filePath}`);
+        logInfo(`[Server] hooks logs -> ${hooksLogWriter.filePath}`);
 
         if (requestedChannels.length === 0) {
             throw new Error('未找到可启动渠道。请检查 config.json 中各渠道 enabled，或设置 CHANNELS 环境变量。');
@@ -147,6 +153,23 @@ export async function startServer(): Promise<void> {
                     shutdown: runtime.shutdown,
                 });
                 logInfo('[Server] channel started: web');
+                continue;
+            }
+
+            if (channel === 'hooks') {
+                if (!config.hooks?.enabled) {
+                    throw new Error('请求启动 hooks，但 config.hooks.enabled=false');
+                }
+                const runtime = await startHooksService({
+                    registerSignalHandlers: false,
+                    exitOnShutdown: false,
+                    logWriter: hooksLogWriter,
+                });
+                running.push({
+                    channel: 'hooks',
+                    shutdown: runtime.shutdown,
+                });
+                logInfo('[Server] channel started: hooks');
             }
         }
 
@@ -176,6 +199,7 @@ export async function startServer(): Promise<void> {
                 dingtalkLogWriter.close().catch(() => undefined),
                 iosLogWriter.close().catch(() => undefined),
                 webLogWriter.close().catch(() => undefined),
+                hooksLogWriter.close().catch(() => undefined),
             ]);
 
             process.exit(hasError ? 1 : 0);
@@ -196,6 +220,7 @@ export async function startServer(): Promise<void> {
             dingtalkLogWriter.close().catch(() => undefined),
             iosLogWriter.close().catch(() => undefined),
             webLogWriter.close().catch(() => undefined),
+            hooksLogWriter.close().catch(() => undefined),
         ]);
         throw error;
     }

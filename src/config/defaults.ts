@@ -157,4 +157,20 @@ export const DEFAULT_CONFIG: Config = {
         maxPayloadBytes: 1024 * 1024,
         pingIntervalMs: 30000,
     },
+    hooks: {
+        enabled: false,
+        host: '0.0.0.0',
+        port: 18082,
+        path: '/hooks/agent',
+        debug: false,
+        maxPayloadBytes: 256 * 1024,
+        maxConcurrentTasks: 2,
+        taskTtlMs: 24 * 60 * 60 * 1000,
+        shutdownDrainTimeoutMs: 15000,
+        callback: {
+            timeoutMs: 10000,
+            retries: 2,
+            retryDelayMs: 1000,
+        },
+    },
 };

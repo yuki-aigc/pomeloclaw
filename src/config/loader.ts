@@ -7,6 +7,7 @@ import {
     type DingTalkConfig,
     type ExecCommandsFile,
     type ExecConfigFile,
+    type HooksConfig,
     type IOSConfig,
     type WebConfig,
     type LLMModelConfig,
@@ -116,6 +117,58 @@ function normalizeWebConfig(input?: Partial<WebConfig>): WebConfig | undefined {
         pingIntervalMs: Number.isFinite(rawPingInterval) && rawPingInterval >= 0
             ? Math.floor(rawPingInterval)
             : defaultWeb.pingIntervalMs,
+    };
+}
+
+function normalizeHooksConfig(input?: Partial<HooksConfig>): HooksConfig | undefined {
+    if (!input) return undefined;
+
+    const defaultHooks = DEFAULT_CONFIG.hooks;
+    if (!defaultHooks) {
+        throw new Error('DEFAULT_CONFIG.hooks is not configured');
+    }
+
+    const rawPort = Number(input.port);
+    const rawMaxPayload = Number(input.maxPayloadBytes);
+    const rawMaxConcurrentTasks = Number(input.maxConcurrentTasks);
+    const rawTaskTtlMs = Number(input.taskTtlMs);
+    const rawShutdownDrainTimeoutMs = Number(input.shutdownDrainTimeoutMs);
+    const rawCallbackTimeoutMs = Number(input.callback?.timeoutMs);
+    const rawCallbackRetries = Number(input.callback?.retries);
+    const rawCallbackRetryDelayMs = Number(input.callback?.retryDelayMs);
+
+    return {
+        enabled: input.enabled ?? defaultHooks.enabled,
+        host: input.host?.trim() || defaultHooks.host,
+        port: Number.isFinite(rawPort) && rawPort > 0
+            ? Math.floor(rawPort)
+            : defaultHooks.port,
+        path: input.path?.trim() || defaultHooks.path,
+        authToken: input.authToken?.trim() || undefined,
+        debug: input.debug ?? defaultHooks.debug,
+        maxPayloadBytes: Number.isFinite(rawMaxPayload) && rawMaxPayload > 0
+            ? Math.floor(rawMaxPayload)
+            : defaultHooks.maxPayloadBytes,
+        maxConcurrentTasks: Number.isFinite(rawMaxConcurrentTasks) && rawMaxConcurrentTasks > 0
+            ? Math.floor(rawMaxConcurrentTasks)
+            : defaultHooks.maxConcurrentTasks,
+        taskTtlMs: Number.isFinite(rawTaskTtlMs) && rawTaskTtlMs > 0
+            ? Math.floor(rawTaskTtlMs)
+            : defaultHooks.taskTtlMs,
+        shutdownDrainTimeoutMs: Number.isFinite(rawShutdownDrainTimeoutMs) && rawShutdownDrainTimeoutMs > 0
+            ? Math.floor(rawShutdownDrainTimeoutMs)
+            : defaultHooks.shutdownDrainTimeoutMs,
+        callback: {
+            timeoutMs: Number.isFinite(rawCallbackTimeoutMs) && rawCallbackTimeoutMs > 0
+                ? Math.floor(rawCallbackTimeoutMs)
+                : defaultHooks.callback?.timeoutMs,
+            retries: Number.isFinite(rawCallbackRetries) && rawCallbackRetries >= 0
+                ? Math.floor(rawCallbackRetries)
+                : defaultHooks.callback?.retries,
+            retryDelayMs: Number.isFinite(rawCallbackRetryDelayMs) && rawCallbackRetryDelayMs >= 0
+                ? Math.floor(rawCallbackRetryDelayMs)
+                : defaultHooks.callback?.retryDelayMs,
+        },
     };
 }
 
@@ -539,6 +592,7 @@ export function loadConfig(): Config {
         dingtalk: normalizeDingTalkConfig(fileConfig.dingtalk),
         ios: normalizeIOSConfig(fileConfig.ios),
         web: normalizeWebConfig(fileConfig.web),
+        hooks: normalizeHooksConfig(fileConfig.hooks),
     };
 
     const parsedModels: LLMModelConfig[] = [];

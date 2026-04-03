@@ -262,6 +262,26 @@ export interface WebConfig {
     pingIntervalMs?: number;
 }
 
+export interface HookCallbackDefaultsConfig {
+    timeoutMs?: number;
+    retries?: number;
+    retryDelayMs?: number;
+}
+
+export interface HooksConfig {
+    enabled: boolean;
+    host: string;
+    port: number;
+    path: string;
+    authToken?: string;
+    debug?: boolean;
+    maxPayloadBytes?: number;
+    maxConcurrentTasks?: number;
+    taskTtlMs?: number;
+    shutdownDrainTimeoutMs?: number;
+    callback?: HookCallbackDefaultsConfig;
+}
+
 export interface CronConfig {
     enabled: boolean;
     store: string;
@@ -278,6 +298,7 @@ export interface Config {
     dingtalk?: DingTalkConfig;
     ios?: IOSConfig;
     web?: WebConfig;
+    hooks?: HooksConfig;
 }
 
 export interface RawConfigFile {
@@ -307,4 +328,5 @@ export interface RawConfigFile {
     dingtalk?: Partial<DingTalkConfig>;
     ios?: Partial<IOSConfig>;
     web?: Partial<WebConfig>;
+    hooks?: Partial<HooksConfig>;
 }

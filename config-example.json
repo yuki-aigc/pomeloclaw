@@ -198,5 +198,22 @@
             "store": "./workspace/cron/ios-jobs.json",
             "runLog": "./workspace/cron/ios-runs.jsonl"
         }
+    },
+    "hooks": {
+        "enabled": false,
+        "host": "0.0.0.0",
+        "port": 18082,
+        "path": "/hooks/agent",
+        "authToken": "",
+        "debug": false,
+        "maxPayloadBytes": 262144,
+        "maxConcurrentTasks": 2,
+        "taskTtlMs": 86400000,
+        "shutdownDrainTimeoutMs": 15000,
+        "callback": {
+            "timeoutMs": 10000,
+            "retries": 2,
+            "retryDelayMs": 1000
+        }
     }
 }

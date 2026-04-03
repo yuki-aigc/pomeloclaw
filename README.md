@@ -37,6 +37,7 @@
 | 🔌 **MCP 集成** | 通过 `@langchain/mcp-adapters` 挂载 MCP 工具（stdio / http / sse） |
 | 🤖 **多模型支持** | OpenAI / Anthropic（多模型配置池，运行时 `/model` 热切换） |
 | 🌉 **渠道网关** | 引入 `GatewayService + ChannelAdapter` 抽象，已接入 DingTalk + iOS WebSocket + Web UI/WebSocket，支持后续扩展飞书 / 安卓等渠道 |
+| 🪝 **异步 Hooks** | 提供独立 `POST /hooks/agent` 入口，支持幂等、异步执行、回调平台、基础并发控制与单独日志 |
 | ⏰ **定时任务** | Cron 调度，支持持久化、JSONL 运行日志、群聊 / 私聊推送；启动时幂等确保 04:00 每日记忆归档任务 |
 | 🧾 **命令执行** | 白名单 / 黑名单策略 + 审批机制，超时与输出长度限制 |
 | 📁 **文件读写** | 基于 `FilesystemBackend` 的工作区文件系统，支撑记忆与技能存储 |
@@ -79,11 +80,14 @@ pnpm ios
 # Web UI + WebSocket 模式
 pnpm web
 
+# Hooks HTTP 模式
+pnpm hooks
+
 # 统一服务端（多渠道入口，按 config/CHANNELS 启动）
 pnpm run server
 ```
 
-多渠道启动方式（当前已实现 dingtalk + ios + web）：
+多渠道启动方式（当前已实现 dingtalk + ios + web + hooks）：
 
 ```bash
 # 启动 config.json 中所有 enabled 渠道
@@ -93,7 +97,8 @@ pnpm run server
 CHANNELS=dingtalk pnpm run server
 CHANNELS=ios pnpm run server
 CHANNELS=web pnpm run server
-CHANNELS=dingtalk,ios,web pnpm run server
+CHANNELS=hooks pnpm run server
+CHANNELS=dingtalk,ios,web,hooks pnpm run server
 
 # 生产建议：先构建再运行统一入口
 pnpm build
@@ -108,6 +113,7 @@ pnpm start:server
 - 钉钉通道日志：`logs/dingtalk-server-YYYY-MM-DD.log`
 - iOS 通道日志：`logs/ios-server-YYYY-MM-DD.log`
 - Web 通道日志：`logs/web-server-YYYY-MM-DD.log`
+- Hooks 日志：`logs/hooks/hooks-server-YYYY-MM-DD.log`
 
 ## 文档导航
 
@@ -119,6 +125,7 @@ pnpm start:server
 - [多 Agent / 多 Session 设计](docs/multi-agent-architecture.md)
 - [渠道网关设计](docs/channel-gateway.md)
 - [Web 渠道 API](docs/web-api.md)
+- [Hooks API](docs/hooks-api.md)
 - [容器与部署说明](docs/deployment-container.md)
 
 ## 项目结构
@@ -130,6 +137,7 @@ pomeloclaw/
 │   ├── dingtalk.ts              # DingTalk 入口
 │   ├── ios.ts                   # iOS WebSocket 入口
 │   ├── web.ts                   # Web UI + WebSocket 入口
+│   ├── hooks.ts                 # Hooks HTTP 入口
 │   ├── server.ts                # 多渠道统一服务端入口
 │   ├── agent.ts                 # 主代理创建与系统提示词
 │   ├── conversation/
@@ -147,6 +155,7 @@ pomeloclaw/
 │   │   ├── ios/                 # iOS WebSocket 适配层
 │   │   ├── web/                 # Web HTTP/WS、上传、文件回传、内置 UI
 │   │   └── gateway/             # 渠道网关抽象
+│   ├── hooks/                   # Hook task manager、请求归一化、回调投递
 │   ├── middleware/              # Memory runtime、memory flush、scope 隔离
 │   ├── compaction/              # 上下文压缩与摘要
 │   ├── cron/                    # 定时任务工具、调度、持久化
