@@ -108,7 +108,7 @@ test('compactMessages replaces prior summaries with one merged summary', async (
     });
 
     const messages = [
-        new SystemMessage('你是 Pomeloclaw。'),
+        new SystemMessage('你是 srebot。'),
         new SystemMessage(`[对话历史摘要]
 ## 当前任务
 - 排查集群告警

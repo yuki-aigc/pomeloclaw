@@ -490,7 +490,7 @@ export class MemoryRuntime {
         this.workspacePath = workspacePath;
         this.config = config;
         this.memoryConfig = config.agent.memory;
-        this.schemaName = this.memoryConfig.pgsql.schema || 'pomeloclaw_memory';
+        this.schemaName = this.memoryConfig.pgsql.schema || 'srebot_memory';
         this.schemaSql = quoteIdentifier(this.schemaName);
         this.filesTable = `${this.schemaSql}.memory_files`;
         this.chunksTable = `${this.schemaSql}.memory_chunks`;

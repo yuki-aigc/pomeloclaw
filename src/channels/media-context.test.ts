@@ -6,7 +6,7 @@ import { promises as fsPromises } from 'node:fs';
 import { buildAttachmentMediaContext } from './media-context.js';
 
 test('buildAttachmentMediaContext reads text files into file blocks', async () => {
-    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-media-'));
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'srebot-media-'));
     const filePath = path.join(tempDir, 'notes.md');
     await fsPromises.writeFile(filePath, '# Title\nhello from attachment\n');
 

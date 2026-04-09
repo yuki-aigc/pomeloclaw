@@ -261,7 +261,7 @@ async function acquireDingTalkStreamLock(params: {
     const lockKey2 = lockDigest.readInt32BE(4);
     const client = new PgClient({
         ...clientConfig,
-        application_name: `pomeloclaw-dingtalk-lock:${instanceId}`,
+        application_name: `srebot-dingtalk-lock:${instanceId}`,
     });
 
     try {
@@ -393,13 +393,13 @@ function instrumentDingTalkClient(client: DWClient, log: Logger, instanceId: str
     let connectAttempt = 0;
 
     const attachSocketInstrumentation = (socket: any): void => {
-        if (!socket || socket.__pomeloclawInstrumented) {
+        if (!socket || socket.__srebotInstrumented) {
             return;
         }
-        socket.__pomeloclawInstrumented = true;
+        socket.__srebotInstrumented = true;
 
         socket.on('open', () => {
-            client.emit('pomeloclaw:stream:socket_open');
+            client.emit('srebot:stream:socket_open');
         });
     };
 
@@ -428,14 +428,14 @@ function instrumentDingTalkClient(client: DWClient, log: Logger, instanceId: str
 
             const cleanup = () => {
                 clearTimeout(timer);
-                client.off('pomeloclaw:stream:registered', onRegistered);
-                client.off('pomeloclaw:stream:open', onOpen);
-                client.off('pomeloclaw:stream:socket_open', onOpen);
+                client.off('srebot:stream:registered', onRegistered);
+                client.off('srebot:stream:open', onOpen);
+                client.off('srebot:stream:socket_open', onOpen);
             };
 
-            client.on('pomeloclaw:stream:registered', onRegistered);
-            client.on('pomeloclaw:stream:open', onOpen);
-            client.on('pomeloclaw:stream:socket_open', onOpen);
+            client.on('srebot:stream:registered', onRegistered);
+            client.on('srebot:stream:open', onOpen);
+            client.on('srebot:stream:socket_open', onOpen);
         });
 
     const originalConnect = client.connect.bind(client);
@@ -480,9 +480,9 @@ function instrumentDingTalkClient(client: DWClient, log: Logger, instanceId: str
         rawClient.onSystem = (downstream: { headers?: { topic?: string }; data?: string }) => {
             const topic = downstream?.headers?.topic || 'unknown';
             if (topic === 'CONNECTED') {
-                client.emit('pomeloclaw:stream:open');
+                client.emit('srebot:stream:open');
             } else if (topic === 'REGISTERED') {
-                client.emit('pomeloclaw:stream:registered');
+                client.emit('srebot:stream:registered');
             }
             const result = originalOnSystem(downstream);
             if (topic === 'disconnect') {
@@ -719,7 +719,7 @@ export async function startDingTalkService(options?: {
     // Create DingTalk Stream client
     log.info('[DingTalk] Connecting to DingTalk Stream...');
     const streamInstanceId = `${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`;
-    const streamUA = `pomeloclaw/${streamInstanceId}`;
+    const streamUA = `srebot/${streamInstanceId}`;
     let streamLock: StreamLockHandle | null = await acquireDingTalkStreamLock({
         config,
         clientId: dingtalkConfig.clientId,

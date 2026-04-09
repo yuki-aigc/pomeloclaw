@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
-const DEFAULT_CREDENTIALS_ENV_PATH = '~/.pomeloclaw/credentials/.env';
+const DEFAULT_CREDENTIALS_ENV_PATH = '~/.srebot/credentials/.env';
 
 let cachedCredentialEnv: Record<string, string> | null = null;
 let cachedCredentialEnvPath: string | null = null;
@@ -19,7 +19,7 @@ function resolvePathWithHome(pathValue: string): string {
 }
 
 function resolveCredentialEnvPath(): string {
-    const configuredPath = process.env.POMELOCLAW_CREDENTIALS_ENV_PATH?.trim();
+    const configuredPath = process.env.SREBOT_CREDENTIALS_ENV_PATH?.trim();
     return resolvePathWithHome(configuredPath || DEFAULT_CREDENTIALS_ENV_PATH);
 }
 

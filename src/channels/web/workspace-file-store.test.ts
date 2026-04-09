@@ -15,7 +15,7 @@ import {
 } from './workspace-file-store.js';
 
 test('skill markdown read/write/list works', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-skill-store-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-skill-store-'));
     const skillsRoot = path.join(root, 'skills');
     const skillDir = path.join(skillsRoot, 'alert-rca');
 
@@ -50,7 +50,7 @@ test('skill markdown read/write/list works', async () => {
 });
 
 test('skill file tree + custom file read/write works', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-skill-store-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-skill-store-'));
     const skillsRoot = path.join(root, 'skills');
     const skillDir = path.join(skillsRoot, 'cloud-resource-bill');
 
@@ -98,7 +98,7 @@ test('skill file tree + custom file read/write works', async () => {
 });
 
 test('skill markdown rejects illegal skill dir', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-skill-store-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-skill-store-'));
     const skillsRoot = path.join(root, 'skills');
 
     try {
@@ -115,7 +115,7 @@ test('skill markdown rejects illegal skill dir', async () => {
 });
 
 test('skill file rejects unsafe relative path', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-skill-store-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-skill-store-'));
     const skillsRoot = path.join(root, 'skills');
     try {
         await assert.rejects(
@@ -132,7 +132,7 @@ test('skill file rejects unsafe relative path', async () => {
 });
 
 test('memory markdown read/write supports scoped MEMORY.md and scoped daily path', async () => {
-    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-memory-store-'));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-memory-store-'));
 
     try {
         const first = await readMemoryMarkdownFile({ workspaceRoot });
@@ -166,7 +166,7 @@ test('memory markdown read/write supports scoped MEMORY.md and scoped daily path
 });
 
 test('memory markdown rejects unsafe relative paths', async () => {
-    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-memory-store-'));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-memory-store-'));
     try {
         await assert.rejects(
             () => writeMemoryMarkdownFile({
@@ -194,7 +194,7 @@ test('memory markdown rejects symlink targets', async () => {
         return;
     }
 
-    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-memory-store-'));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-memory-store-'));
     try {
         const memoryDir = path.join(workspaceRoot, 'memory');
         await mkdir(memoryDir, { recursive: true });

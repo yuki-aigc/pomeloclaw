@@ -7,7 +7,7 @@ StatefulSet Pod 名称为 `srebot-pgsql-0`，以下命令默认在 default names
 ## 方式一：进容器用 psql 逐个执行
 
 ```bash
-kubectl exec -it srebot-pgsql-0 -- psql -U pomeloclaw -d pomeloclaw
+kubectl exec -it srebot-pgsql-0 -- psql -U srebot -d srebot
 ```
 
 进入 psql 后按顺序粘贴执行：
@@ -17,9 +17,9 @@ kubectl exec -it srebot-pgsql-0 -- psql -U pomeloclaw -d pomeloclaw
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 02-memory-schema.sql
-CREATE SCHEMA IF NOT EXISTS pomeloclaw_memory;
+CREATE SCHEMA IF NOT EXISTS srebot_memory;
 
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.memory_files (
+CREATE TABLE IF NOT EXISTS srebot_memory.memory_files (
     scope_key TEXT NOT NULL,
     rel_path TEXT NOT NULL,
     source_type TEXT NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.memory_files (
     PRIMARY KEY (scope_key, rel_path)
 );
 
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.memory_chunks (
+CREATE TABLE IF NOT EXISTS srebot_memory.memory_chunks (
     id BIGSERIAL PRIMARY KEY,
     scope_key TEXT NOT NULL,
     rel_path TEXT NOT NULL,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.memory_chunks (
     UNIQUE (scope_key, rel_path, chunk_index)
 );
 
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.embedding_cache (
+CREATE TABLE IF NOT EXISTS srebot_memory.embedding_cache (
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -58,16 +58,16 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.embedding_cache (
 );
 
 CREATE INDEX IF NOT EXISTS memory_chunks_scope_idx
-    ON pomeloclaw_memory.memory_chunks (scope_key);
+    ON srebot_memory.memory_chunks (scope_key);
 CREATE INDEX IF NOT EXISTS memory_chunks_fts_idx
-    ON pomeloclaw_memory.memory_chunks USING GIN (search_vector);
+    ON srebot_memory.memory_chunks USING GIN (search_vector);
 CREATE INDEX IF NOT EXISTS memory_chunks_embedding_ivf_idx
-    ON pomeloclaw_memory.memory_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    ON srebot_memory.memory_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 CREATE INDEX IF NOT EXISTS memory_files_scope_updated_idx
-    ON pomeloclaw_memory.memory_files (scope_key, updated_at DESC);
+    ON srebot_memory.memory_files (scope_key, updated_at DESC);
 
 -- 03-dingtalk-session.sql
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_sessions (
+CREATE TABLE IF NOT EXISTS srebot_memory.dingtalk_sessions (
     session_key TEXT PRIMARY KEY,
     scope_key TEXT NOT NULL,
     thread_id TEXT NOT NULL,
@@ -82,11 +82,11 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS dingtalk_sessions_scope_idx
-    ON pomeloclaw_memory.dingtalk_sessions (scope_key);
+    ON srebot_memory.dingtalk_sessions (scope_key);
 CREATE INDEX IF NOT EXISTS dingtalk_sessions_updated_idx
-    ON pomeloclaw_memory.dingtalk_sessions (last_updated DESC);
+    ON srebot_memory.dingtalk_sessions (last_updated DESC);
 
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_session_events (
+CREATE TABLE IF NOT EXISTS srebot_memory.dingtalk_session_events (
     id BIGSERIAL PRIMARY KEY,
     session_key TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
@@ -100,16 +100,16 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_session_events (
 );
 
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_session_idx
-    ON pomeloclaw_memory.dingtalk_session_events (session_key, created_at DESC);
+    ON srebot_memory.dingtalk_session_events (session_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_conversation_idx
-    ON pomeloclaw_memory.dingtalk_session_events (conversation_id, created_at DESC);
+    ON srebot_memory.dingtalk_session_events (conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_created_at_idx
-    ON pomeloclaw_memory.dingtalk_session_events (created_at DESC);
+    ON srebot_memory.dingtalk_session_events (created_at DESC);
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_fts_idx
-    ON pomeloclaw_memory.dingtalk_session_events
+    ON srebot_memory.dingtalk_session_events
     USING GIN (to_tsvector('simple', COALESCE(content, '')));
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_embedding_ivf_idx
-    ON pomeloclaw_memory.dingtalk_session_events
+    ON srebot_memory.dingtalk_session_events
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 ```
 
@@ -125,7 +125,7 @@ kubectl cp deploy/initdb srebot-pgsql-0:/tmp/initdb
 kubectl exec -it srebot-pgsql-0 -- bash -c '
   for f in /tmp/initdb/*.sql; do
     echo ">>> executing $f"
-    psql -U pomeloclaw -d pomeloclaw -f "$f"
+    psql -U srebot -d srebot -f "$f"
   done
 '
 ```
@@ -134,15 +134,15 @@ kubectl exec -it srebot-pgsql-0 -- bash -c '
 
 ```bash
 cat deploy/initdb/01-extensions.sql deploy/initdb/02-memory-schema.sql deploy/initdb/03-dingtalk-session.sql | \
-  kubectl exec -i srebot-pgsql-0 -- psql -U pomeloclaw -d pomeloclaw
+  kubectl exec -i srebot-pgsql-0 -- psql -U srebot -d srebot
 ```
 
 ## 验证
 
 ```bash
-kubectl exec -it srebot-pgsql-0 -- psql -U pomeloclaw -d pomeloclaw -c "\dn"
-# 应看到 pomeloclaw_memory schema
+kubectl exec -it srebot-pgsql-0 -- psql -U srebot -d srebot -c "\dn"
+# 应看到 srebot_memory schema
 
-kubectl exec -it srebot-pgsql-0 -- psql -U pomeloclaw -d pomeloclaw -c "\dt pomeloclaw_memory.*"
+kubectl exec -it srebot-pgsql-0 -- psql -U srebot -d srebot -c "\dt srebot_memory.*"
 # 应看到 memory_files, memory_chunks, embedding_cache, dingtalk_sessions, dingtalk_session_events
 ```

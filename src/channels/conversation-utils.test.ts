@@ -18,7 +18,7 @@ function formatLocalDateWithOffset(baseDate: Date, offsetDays: number): string {
 }
 
 test('prepareConversationUserMessages injects startup memory and recall policy together', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'pomeloclaw-conversation-utils-'));
+    const tempDir = await mkdtemp(join(tmpdir(), 'srebot-conversation-utils-'));
     const scopeKey = 'group_demo';
     const now = new Date();
     const today = formatLocalDateWithOffset(now, 0);

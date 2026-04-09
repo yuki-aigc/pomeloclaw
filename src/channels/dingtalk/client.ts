@@ -173,7 +173,7 @@ function escapeMultipartFilename(fileName: string): string {
 }
 
 function buildMultipartFileBody(fileName: string, fileBuffer: Buffer): { body: Buffer; boundary: string } {
-    const boundary = `----pomeloclaw-${randomUUID()}`;
+    const boundary = `----srebot-${randomUUID()}`;
     const safeFileName = escapeMultipartFilename(fileName);
     const head = Buffer.from(
         `--${boundary}\r\n` +

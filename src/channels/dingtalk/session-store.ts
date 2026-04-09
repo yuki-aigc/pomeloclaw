@@ -6,7 +6,7 @@ import type { PoolConfig } from 'pg';
 import type { AgentMemoryConfig, Config } from '../../config.js';
 import type { Logger, SessionState } from './types.js';
 
-const DEFAULT_SCHEMA = 'pomeloclaw_memory';
+const DEFAULT_SCHEMA = 'srebot_memory';
 const SESSION_TABLE = 'dingtalk_sessions';
 const SESSION_EVENT_TABLE = 'session_events';
 const LEGACY_SESSION_EVENT_TABLE = 'dingtalk_session_events';

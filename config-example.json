@@ -41,11 +41,11 @@
                 "connection_string": "",
                 "host": "127.0.0.1",
                 "port": 5432,
-                "user": "pomeloclaw",
+                "user": "srebot",
                 "password": "Admin@123",
-                "database": "pomeloclaw",
+                "database": "srebot",
                 "ssl": false,
-                "schema": "pomeloclaw_memory"
+                "schema": "srebot_memory"
             },
             "retrieval": {
                 "mode": "hybrid",

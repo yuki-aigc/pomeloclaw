@@ -24,14 +24,14 @@ spec:
               name: postgres
           env:
             - name: POSTGRES_USER
-              value: "pomeloclaw"
+              value: "srebot"
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: srebot-pgsql-secret
                   key: password
             - name: POSTGRES_DB
-              value: "pomeloclaw"
+              value: "srebot"
             - name: TZ
               value: "Asia/Shanghai"
             - name: PGDATA
@@ -41,7 +41,7 @@ spec:
               command:
                 - pg_isready
                 - -U
-                - pomeloclaw
+                - srebot
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
@@ -51,7 +51,7 @@ spec:
               command:
                 - pg_isready
                 - -U
-                - pomeloclaw
+                - srebot
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5

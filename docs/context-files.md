@@ -1,6 +1,6 @@
 # 上下文文件与优先级
 
-本文档说明 `AGENTS.md`、`TOOLS.md`、`SOUL.md`、`HEARTBEAT.md`、`MEMORY.md` 在 Pomeloclaw 中的作用、加载方式、scope 覆盖规则，以及冲突时的优先级。
+本文档说明 `AGENTS.md`、`TOOLS.md`、`SOUL.md`、`HEARTBEAT.md`、`MEMORY.md` 在 srebot 中的作用、加载方式、scope 覆盖规则，以及冲突时的优先级。
 
 ## 1. 总览
 

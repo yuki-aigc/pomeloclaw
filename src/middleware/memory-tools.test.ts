@@ -49,7 +49,7 @@ test('buildStructuredTeamMemoryContent renders normalized markdown sections', ()
 });
 
 test('memory_save_team promotes scoped memory into main long-term memory', async (t) => {
-    const workspacePath = await mkdtemp(join(tmpdir(), 'pomeloclaw-memory-tools-'));
+    const workspacePath = await mkdtemp(join(tmpdir(), 'srebot-memory-tools-'));
     t.after(async () => {
         await rm(workspacePath, { recursive: true, force: true });
     });
@@ -95,7 +95,7 @@ test('memory_save_team promotes scoped memory into main long-term memory', async
 });
 
 test('memory_save_team merges entries with the same title instead of appending duplicates', async (t) => {
-    const workspacePath = await mkdtemp(join(tmpdir(), 'pomeloclaw-memory-merge-'));
+    const workspacePath = await mkdtemp(join(tmpdir(), 'srebot-memory-merge-'));
     t.after(async () => {
         await rm(workspacePath, { recursive: true, force: true });
     });
@@ -149,7 +149,7 @@ test('memory_save_team merges entries with the same title instead of appending d
 });
 
 test('memory_save_team accepts multiline string fields for list sections', async (t) => {
-    const workspacePath = await mkdtemp(join(tmpdir(), 'pomeloclaw-memory-multiline-'));
+    const workspacePath = await mkdtemp(join(tmpdir(), 'srebot-memory-multiline-'));
     t.after(async () => {
         await rm(workspacePath, { recursive: true, force: true });
     });

@@ -679,7 +679,7 @@ export function renderWebChatPage(config: WebConfig): string {
   <div class="shell">
     <aside class="panel sidebar">
       <div class="hero">
-        <div class="eyebrow">Pomeloclaw Web Adapter</div>
+        <div class="eyebrow">srebot Web Adapter</div>
         <h1>${escapeAttribute(config.title)}</h1>
         <p>直接复用后端 Agent、记忆与工具，浏览器通过 WebSocket 对话，并实时打印模型输出。</p>
       </div>
@@ -782,10 +782,10 @@ export function renderWebChatPage(config: WebConfig): string {
       };
 
       const storageKeys = {
-        userName: 'pomeloclaw.web.userName',
-        userId: 'pomeloclaw.web.userId',
-        conversationId: 'pomeloclaw.web.conversationId',
-        authToken: 'pomeloclaw.web.authToken'
+        userName: 'srebot.web.userName',
+        userId: 'srebot.web.userId',
+        conversationId: 'srebot.web.conversationId',
+        authToken: 'srebot.web.authToken'
       };
 
       const state = {

@@ -26,7 +26,7 @@ test('parseCronSlashCommand recognizes /cron', () => {
 });
 
 test('executeCronSlashCommand lists jobs from all registered channels', async (t) => {
-    const baseDir = await mkdtemp(join(tmpdir(), 'pomeloclaw-cron-slash-'));
+    const baseDir = await mkdtemp(join(tmpdir(), 'srebot-cron-slash-'));
     const dingtalk = createCronService(baseDir, 'dingtalk-jobs');
     const ios = createCronService(baseDir, 'ios-jobs');
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { buildPromptBootstrapMessage } from './bootstrap.js';
 
 test('bootstrap keeps scoped MEMORY content visible under total budget pressure', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'pomeloclaw-bootstrap-'));
+    const tempDir = await mkdtemp(join(tmpdir(), 'srebot-bootstrap-'));
     const scopeKey = 'direct_web_user_x';
     const memoryDir = join(tempDir, 'memory', 'scopes', scopeKey);
     const sentinel = '[[MEMORY_SENTINEL_SHOULD_SURVIVE]]';

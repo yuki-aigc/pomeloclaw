@@ -204,13 +204,13 @@ function getGitHubAuthHeaders(): Record<string, string> {
     if (!token) {
         return {
             'Accept': 'application/vnd.github+json',
-            'User-Agent': 'pomeloclaw-skill-installer',
+            'User-Agent': 'srebot-skill-installer',
         };
     }
     return {
         'Accept': 'application/vnd.github+json',
         'Authorization': `Bearer ${token}`,
-        'User-Agent': 'pomeloclaw-skill-installer',
+        'User-Agent': 'srebot-skill-installer',
     };
 }
 
@@ -543,7 +543,7 @@ async function installPreparedSkill(params: {
     const targetDirName = sanitizeSkillName(params.targetDirHint || metadata.name || path.basename(params.preparedSkillRoot));
     const skillsDir = path.resolve(params.skillsDir);
     const targetDir = path.join(skillsDir, targetDirName);
-    const stagingParent = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-skill-stage-'));
+    const stagingParent = await mkdtemp(path.join(os.tmpdir(), 'srebot-skill-stage-'));
     const stagedDir = path.join(stagingParent, targetDirName);
 
     await ensureDir(skillsDir);
@@ -606,7 +606,7 @@ export async function installSkillFromSource(params: {
     skillsDir: string;
 }): Promise<SkillInstallResult> {
     const installSource = await resolveInstallSource(params.source);
-    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-skill-import-'));
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'srebot-skill-import-'));
 
     try {
         if (installSource.kind === 'github') {

@@ -1,10 +1,10 @@
 -- DingTalk session state persistence (survives service restarts)
 -- Keep in sync with src/channels/dingtalk/session-store.ts
 
-CREATE SCHEMA IF NOT EXISTS pomeloclaw_memory;
+CREATE SCHEMA IF NOT EXISTS srebot_memory;
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_sessions (
+CREATE TABLE IF NOT EXISTS srebot_memory.dingtalk_sessions (
     session_key TEXT PRIMARY KEY,
     scope_key TEXT NOT NULL,
     thread_id TEXT NOT NULL,
@@ -19,12 +19,12 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS dingtalk_sessions_scope_idx
-    ON pomeloclaw_memory.dingtalk_sessions (scope_key);
+    ON srebot_memory.dingtalk_sessions (scope_key);
 
 CREATE INDEX IF NOT EXISTS dingtalk_sessions_updated_idx
-    ON pomeloclaw_memory.dingtalk_sessions (last_updated DESC);
+    ON srebot_memory.dingtalk_sessions (last_updated DESC);
 
-CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_session_events (
+CREATE TABLE IF NOT EXISTS srebot_memory.dingtalk_session_events (
     id BIGSERIAL PRIMARY KEY,
     session_key TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
@@ -38,18 +38,18 @@ CREATE TABLE IF NOT EXISTS pomeloclaw_memory.dingtalk_session_events (
 );
 
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_session_idx
-    ON pomeloclaw_memory.dingtalk_session_events (session_key, created_at DESC);
+    ON srebot_memory.dingtalk_session_events (session_key, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_conversation_idx
-    ON pomeloclaw_memory.dingtalk_session_events (conversation_id, created_at DESC);
+    ON srebot_memory.dingtalk_session_events (conversation_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_created_at_idx
-    ON pomeloclaw_memory.dingtalk_session_events (created_at DESC);
+    ON srebot_memory.dingtalk_session_events (created_at DESC);
 
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_fts_idx
-    ON pomeloclaw_memory.dingtalk_session_events
+    ON srebot_memory.dingtalk_session_events
     USING GIN (to_tsvector('simple', COALESCE(content, '')));
 
 CREATE INDEX IF NOT EXISTS dingtalk_session_events_embedding_ivf_idx
-    ON pomeloclaw_memory.dingtalk_session_events
+    ON srebot_memory.dingtalk_session_events
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);

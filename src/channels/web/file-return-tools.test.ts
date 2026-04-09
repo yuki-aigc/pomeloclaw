@@ -14,7 +14,7 @@ const silentLogger = {
 };
 
 test('web_write_tmp_file writes file into workspace tmp and queues attachment', async () => {
-    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-web-tools-'));
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'srebot-web-tools-'));
     const [writeTool] = createWebFileReturnTools(workspaceRoot, silentLogger);
 
     try {

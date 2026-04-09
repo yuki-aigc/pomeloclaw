@@ -31,13 +31,13 @@
 ### 3.1 构建镜像
 
 ```bash
-docker build -f deploy/Dockerfile -t your-registry/pomeloclaw:latest .
+docker build -f deploy/Dockerfile -t your-registry/srebot:latest .
 ```
 
 Mac 若要构建 linux/amd64：
 
 ```bash
-docker build --platform linux/amd64 -f deploy/Dockerfile -t your-registry/pomeloclaw:latest .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t your-registry/srebot:latest .
 ```
 
 ### 3.2 默认启动命令

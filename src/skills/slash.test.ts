@@ -24,7 +24,7 @@ test('parseSkillSlashCommand recognizes skill commands', () => {
 });
 
 test('executeSkillSlashCommand lists installed skills and triggers reload', async () => {
-    const skillsDir = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-skill-slash-'));
+    const skillsDir = await mkdtemp(path.join(os.tmpdir(), 'srebot-skill-slash-'));
     let reloadCount = 0;
     try {
         await createSkillDir(skillsDir);
@@ -56,7 +56,7 @@ test('executeSkillSlashCommand lists installed skills and triggers reload', asyn
 });
 
 test('executeSkillSlashCommand removes installed skills and triggers reload', async () => {
-    const skillsDir = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-skill-remove-slash-'));
+    const skillsDir = await mkdtemp(path.join(os.tmpdir(), 'srebot-skill-remove-slash-'));
     let reloadCount = 0;
     try {
         await createSkillDir(skillsDir);

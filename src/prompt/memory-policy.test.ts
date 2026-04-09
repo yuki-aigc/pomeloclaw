@@ -33,7 +33,7 @@ test('buildUserMessagesWithMemoryPolicy enforces memory_search when recall inten
 });
 
 test('buildSessionStartupMemoryInjection reads today and yesterday scoped daily files', async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), 'pomeloclaw-memory-policy-'));
+    const tempDir = await mkdtemp(join(tmpdir(), 'srebot-memory-policy-'));
     const scopeKey = 'direct_web_user1';
     const now = new Date('2026-03-12T12:00:00.000Z');
     const today = formatLocalDateWithOffset(now, 0);

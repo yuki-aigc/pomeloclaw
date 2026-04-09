@@ -7,7 +7,7 @@ import { CronService } from './service.js';
 import type { CronRunResult } from './types.js';
 
 test('CronService.triggerJobNow starts manual run in background and updates state after completion', async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'pomeloclaw-cron-service-'));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'srebot-cron-service-'));
     let resolveRun: ((result: CronRunResult) => void) | null = null;
     let runCount = 0;
 

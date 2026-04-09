@@ -27,7 +27,7 @@ async function writeSkill(dir: string, params?: { name?: string; description?: s
 }
 
 test('listInstalledSkills returns installed skill metadata', async () => {
-    const skillsDir = await createTempDir('pomeloclaw-skills-list-');
+    const skillsDir = await createTempDir('srebot-skills-list-');
     try {
         await writeSkill(path.join(skillsDir, 'demo-skill'));
 
@@ -41,8 +41,8 @@ test('listInstalledSkills returns installed skill metadata', async () => {
 });
 
 test('installSkillFromSource installs from a local skill directory', async () => {
-    const tempRoot = await createTempDir('pomeloclaw-skill-dir-src-');
-    const skillsDir = await createTempDir('pomeloclaw-skill-dir-dest-');
+    const tempRoot = await createTempDir('srebot-skill-dir-src-');
+    const skillsDir = await createTempDir('srebot-skill-dir-dest-');
     try {
         const sourceDir = path.join(tempRoot, 'remote-source');
         await writeSkill(sourceDir, { name: 'dir-installed-skill', description: 'installed from directory', extraFile: 'run.sh' });
@@ -64,8 +64,8 @@ test('installSkillFromSource installs from a local skill directory', async () =>
 });
 
 test('installSkillFromSource installs from a local .skill archive and overwrites existing skill', async () => {
-    const tempRoot = await createTempDir('pomeloclaw-skill-archive-src-');
-    const skillsDir = await createTempDir('pomeloclaw-skill-archive-dest-');
+    const tempRoot = await createTempDir('srebot-skill-archive-src-');
+    const skillsDir = await createTempDir('srebot-skill-archive-dest-');
     try {
         const archiveSkillDir = path.join(tempRoot, 'packed-skill');
         await writeSkill(archiveSkillDir, { name: 'archive-skill', description: 'installed from archive', extraFile: 'tool.py' });
@@ -95,8 +95,8 @@ test('installSkillFromSource installs from a local .skill archive and overwrites
 });
 
 test('installSkillFromSource prefers source path basename when choosing overwrite target', async () => {
-    const tempRoot = await createTempDir('pomeloclaw-skill-dir-hint-src-');
-    const skillsDir = await createTempDir('pomeloclaw-skill-dir-hint-dest-');
+    const tempRoot = await createTempDir('srebot-skill-dir-hint-src-');
+    const skillsDir = await createTempDir('srebot-skill-dir-hint-dest-');
     try {
         await writeSkill(path.join(skillsDir, 'same-path-name'), {
             name: 'old-frontmatter-name',
@@ -126,7 +126,7 @@ test('installSkillFromSource prefers source path basename when choosing overwrit
 });
 
 test('removeInstalledSkill removes by skill name or directory name', async () => {
-    const skillsDir = await createTempDir('pomeloclaw-skill-remove-');
+    const skillsDir = await createTempDir('srebot-skill-remove-');
     try {
         await writeSkill(path.join(skillsDir, 'custom-folder'), {
             name: 'actual-skill-name',

@@ -6,7 +6,7 @@
 
 - 外部平台 `POST /hooks/agent`
 - 服务端立即返回 `202 Accepted`
-- Pomeloclaw 在后台执行 Agent 分析
+- srebot 在后台执行 Agent 分析
 - 分析完成后回调平台
 
 当前设计不直接负责钉钉通知。通知编排、去重、聚合和升级策略建议由平台侧负责。
@@ -146,7 +146,7 @@ HTTP 状态码：
 
 ## 6. 回调平台
 
-任务结束后，Pomeloclaw 会向 `callback.url` 发起 `POST`。
+任务结束后，srebot 会向 `callback.url` 发起 `POST`。
 
 平台侧可以按以下协议解析回调：
 

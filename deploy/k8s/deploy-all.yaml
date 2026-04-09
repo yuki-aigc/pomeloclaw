@@ -120,11 +120,11 @@ stringData:
             "connection_string": "",
             "host": "postgres",
             "port": 5432,
-            "user": "pomeloclaw",
+            "user": "srebot",
             "password": "REPLACE_ME",
-            "database": "pomeloclaw",
+            "database": "srebot",
             "ssl": false,
-            "schema": "pomeloclaw_memory"
+            "schema": "srebot_memory"
           },
           "retrieval": {
             "mode": "hybrid",

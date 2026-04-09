@@ -1,7 +1,7 @@
 {
-    "name": "pomeloclaw",
+    "name": "srebot",
     "version": "1.0.0",
-    "description": "Pomeloclaw: 智能助手，支持记忆、技能、定时任务与多渠道接入",
+    "description": "srebot: 智能助手，支持记忆、技能、定时任务与多渠道接入",
     "main": "dist/index.js",
     "type": "module",
     "scripts": {

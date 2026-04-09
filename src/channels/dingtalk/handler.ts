@@ -319,7 +319,7 @@ function getSessionStoreConfigKey(config: Config): string {
         user: pg.user || '',
         database: pg.database || '',
         ssl: pg.ssl,
-        schema: pg.schema || 'pomeloclaw_memory',
+        schema: pg.schema || 'srebot_memory',
     });
 }
 

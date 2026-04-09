@@ -1,6 +1,6 @@
-# Compaction 机制说明（Pomeloclaw）
+# Compaction 机制说明（srebot）
 
-> 本文档说明 Pomeloclaw 的上下文压缩机制、触发策略、执行流程与运维建议。
+> 本文档说明 srebot 的上下文压缩机制、触发策略、执行流程与运维建议。
 
 参考：
 - [OpenClaw Compaction](https://docs.openclaw.ai/zh-CN/concepts/compaction)
@@ -15,7 +15,7 @@ Compaction 的目标是：
 - 减少历史消息对上下文预算的占用
 - 保留关键决策/约束/待办，丢弃低价值细节
 
-在 Pomeloclaw 里，Compaction 与 Memory 不是替代关系，而是串联关系：
+在 srebot 里，Compaction 与 Memory 不是替代关系，而是串联关系：
 - 先 `memory flush`（尽量把关键事实写入记忆）
 - 再压缩当前会话消息历史
 
@@ -199,24 +199,24 @@ CLI 支持：
 
 1. 触发理念
 - OpenClaw：文档强调根据上下文窗口安全比例自动触发，并区分 compaction 与 session pruning。
-- Pomeloclaw：采用双阈值（90% flush + 100% compact）与固定预算比例（`context_window * max_history_share`）。
+- srebot：采用双阈值（90% flush + 100% compact）与固定预算比例（`context_window * max_history_share`）。
 
 2. 模式能力
 - OpenClaw：文档明确“压缩配置与模式（modes）”与 pruning 关系。
-- Pomeloclaw：当前是单一路径摘要压缩，pruning 模式尚未单独产品化。
+- srebot：当前是单一路径摘要压缩，pruning 模式尚未单独产品化。
 
 3. Memory 耦合方式
 - OpenClaw：强调 compaction 与 memory 协同，但概念上分层更明确。
-- Pomeloclaw：工程上强绑定“flush-before-compact”，在实战里更直接，但策略颗粒度较粗。
+- srebot：工程上强绑定“flush-before-compact”，在实战里更直接，但策略颗粒度较粗。
 
 ### 8.2 优劣对比
 
-Pomeloclaw 的优势：
+srebot 的优势：
 - 行为简单直接，调参成本低。
 - 与 DingTalk 场景整合深（summary 事件入库、关机前 flush）。
 - 在“容易重启/滚动发布”的场景，落盘保障更务实。
 
-Pomeloclaw 的短板：
+srebot 的短板：
 - 缺少 compaction mode/pruning mode 的细粒度策略开关。
 - `reserve_tokens` 尚未完整进入预算算法，策略表达力不足。
 - token 估算是启发式，不是 provider 真实计费 token，存在偏差。
