@@ -3,7 +3,7 @@
 > 本文档说明 srebot 的上下文压缩机制、触发策略、执行流程与运维建议。
 
 参考：
-- [OpenClaw Compaction](https://docs.openclaw.ai/zh-CN/concepts/compaction)
+- [智能体 Compaction](https://docs.智能体.ai/zh-CN/concepts/compaction)
 - [Memory + Compaction 流程图](./architecture-memory-compaction.md)
 
 ---
@@ -193,20 +193,20 @@ CLI 支持：
 
 ---
 
-## 8. 与 OpenClaw 的差异与优劣
+## 8. 与 智能体 的差异与优劣
 
 ### 8.1 机制差异
 
 1. 触发理念
-- OpenClaw：文档强调根据上下文窗口安全比例自动触发，并区分 compaction 与 session pruning。
+- 智能体：文档强调根据上下文窗口安全比例自动触发，并区分 compaction 与 session pruning。
 - srebot：采用双阈值（90% flush + 100% compact）与固定预算比例（`context_window * max_history_share`）。
 
 2. 模式能力
-- OpenClaw：文档明确“压缩配置与模式（modes）”与 pruning 关系。
+- 智能体：文档明确“压缩配置与模式（modes）”与 pruning 关系。
 - srebot：当前是单一路径摘要压缩，pruning 模式尚未单独产品化。
 
 3. Memory 耦合方式
-- OpenClaw：强调 compaction 与 memory 协同，但概念上分层更明确。
+- 智能体：强调 compaction 与 memory 协同，但概念上分层更明确。
 - srebot：工程上强绑定“flush-before-compact”，在实战里更直接，但策略颗粒度较粗。
 
 ### 8.2 优劣对比
@@ -221,11 +221,11 @@ srebot 的短板：
 - `reserve_tokens` 尚未完整进入预算算法，策略表达力不足。
 - token 估算是启发式，不是 provider 真实计费 token，存在偏差。
 
-OpenClaw 的优势（从文档设计看）：
+智能体 的优势（从文档设计看）：
 - compaction 与 pruning 分层清晰，可解释性强。
 - 上下文窗口管理与模式化策略更完整。
 
-OpenClaw 的潜在代价：
+智能体 的潜在代价：
 - 模式更丰富也意味着配置与调优复杂度更高。
 
 ---

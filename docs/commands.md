@@ -146,7 +146,7 @@ CHANNELS=dingtalk,ios,web pnpm run server
 示例：
 
 ```text
-/skill-install openclaw/skills/prometheus-analyzer
+/skill-install 智能体/skills/prometheus-analyzer
 /skill-install https://github.com/owner/repo/tree/main/skills/demo-skill
 /skill-install ./downloads/demo-skill.skill
 /skill-install https://example.com/demo-skill.zip

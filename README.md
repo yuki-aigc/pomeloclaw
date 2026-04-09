@@ -5,7 +5,7 @@
 <h1 align="center">SRE BOT</h1>
 
 <p align="center">
-  基于 <a href="https://github.com/DeepAgentsAI/DeepAgentsJS">DeepAgentsJS</a> + <a href="https://github.com/langchain-ai/langgraphjs">LangGraph</a> 构建的智能助手，参考了 OpenClaw 的设计理念。<br/>
+  基于 <a href="https://github.com/DeepAgentsAI/DeepAgentsJS">DeepAgentsJS</a> + <a href="https://github.com/langchain-ai/langgraphjs">LangGraph</a> 构建的智能助手，参考了 智能体 的设计理念。<br/>
   具备自主记忆、SKILL 编写/执行、定时任务调度和多渠道接入能力。
 </p>
 
@@ -32,7 +32,7 @@
 | ⚡ **会话向量召回** | `session_events` 向量异步回填 + PG 内 ANN 检索，失败自动回退 FTS / temporal |
 | ♻️ **会话TTL治理** | `session_events` 支持按 TTL 自动清理，控制历史体量与检索成本 |
 | 🧹 **上下文压缩** | 自动 / 手动压缩对话历史，实时展示 Token 使用情况 |
-| 🧭 **Prompt Bootstrap** | 支持 OpenClaw 风格 `AGENTS/TOOLS/SOUL/HEARTBEAT/MEMORY` 多文件注入，含规则优先级与 scope 覆盖 |
+| 🧭 **Prompt Bootstrap** | 支持 智能体 风格 `AGENTS/TOOLS/SOUL/HEARTBEAT/MEMORY` 多文件注入，含规则优先级与 scope 覆盖 |
 | 🛠️ **技能系统** | 以 `SKILL.md` 定义技能，支持热重载、本地/远程安装，并通过子代理协作 |
 | 🔌 **MCP 集成** | 通过 `@langchain/mcp-adapters` 挂载 MCP 工具（stdio / http / sse） |
 | 🤖 **多模型支持** | OpenAI / Anthropic（多模型配置池，运行时 `/model` 热切换） |
@@ -605,7 +605,7 @@ MEMORY_PG_PASSWORD="xxx"
 你: 帮我创建一个告警根因分析的技能
 助手: 已调用 skill-writer-agent 创建 workspace/skills/alert-rca/SKILL.md
 
-你: /skill-install openclaw/skills/prometheus-analyzer
+你: /skill-install 智能体/skills/prometheus-analyzer
 助手: ✅ 技能已安装：`prometheus-analyzer`
       - 状态：新安装
       - 目录：`prometheus-analyzer`

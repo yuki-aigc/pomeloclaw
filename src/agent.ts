@@ -649,7 +649,7 @@ ${toolSummaryLines.join('\n')}
 - 冲突处理：安全/边界冲突按高优先级执行；若仅风格冲突，优先满足用户本轮任务并在必要时用 heartbeat_save 记录纠偏。
 
 ## Prompt Bootstrap
-- 参考 OpenClaw 的多文件注入思路：每个会话 thread 首次调用时注入 AGENTS / TOOLS / SOUL / HEARTBEAT。
+- 参考 智能体 的多文件注入思路：每个会话 thread 首次调用时注入 AGENTS / TOOLS / SOUL / HEARTBEAT。
 - 将引导文件视为“可变项目上下文”；若文件缺失，保持硬规则不变并继续完成任务。
 
 ## Safety（硬规则）

@@ -552,7 +552,7 @@ export async function buildPromptBootstrapMessage(params: {
 
     const header = [
         '【Prompt Bootstrap / 系统上下文转述】',
-        '以下内容来自工作区 Markdown 引导文件（参考 OpenClaw 的多文件注入思路）。',
+        '以下内容来自工作区 Markdown 引导文件（参考 智能体 的多文件注入思路）。',
         '规则优先级（高 -> 低）：',
         '1) 平台与运行时硬约束（安全策略、审批、工具白名单/黑名单）',
         '2) 系统提示词中的硬规则',
