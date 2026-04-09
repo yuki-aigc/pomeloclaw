@@ -21,6 +21,7 @@ import { createChatModel } from './llm.js';
 import { createCronTools } from './cron/tools.js';
 import { createDingTalkFileReturnTools } from './channels/dingtalk/file-return-tools.js';
 import { createWebFileReturnTools } from './channels/web/file-return-tools.js';
+import { getChannelAbortSignal } from './channels/context.js';
 import {
     buildEnvWithCredentialFallback,
     enterTemporaryCredentialEnv,
@@ -472,15 +473,22 @@ function createExecTool(config: Config, execApprovalPrompt?: ExecApprovalPrompt)
                 }
             }
 
-            console.log(`[ExecTool] [${callId}] Executing command: ${redactSensitiveText(finalCommand)}`);
-
+            const abortSignal = getChannelAbortSignal();
+            console.log(`[ExecTool] [${callId}] Dispatching command: ${redactSensitiveText(finalCommand)}`);
             const result = await runCommand(finalCommand, execConfig, {
                 cwd: finalCwd,
                 timeoutMs: finalTimeout,
                 env: buildEnvWithCredentialFallback(),
                 policyMode: policy.status === 'unknown' ? 'deny-only' : 'enforce',
                 callId,
+                abortSignal,
             });
+            if (!result.success && abortSignal?.aborted) {
+                const phase = result.metadata.pid ? 'terminated' : 'skipped before spawn';
+                console.log(
+                    `[ExecTool] [${callId}] Command cancelled (${phase}): ${redactSensitiveText(finalCommand)}`
+                );
+            }
             await persistExecAudit('exec_result', callId, {
                 success: result.success,
                 error: result.error,

@@ -119,7 +119,35 @@ Content-Type: application/json
   "nick_name": "Hunter",
   "session_title": "optional title",
   "created_at": 1772580000000,
-  "reused": false
+  "reused": false,
+  "token_usage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "contextTokens": 0,
+    "contextWindow": 128000,
+    "contextUsagePercent": 0,
+    "contextRemainingTokens": 128000,
+    "contextRemainingPercent": 100,
+    "hardContextBudget": 108000,
+    "hardContextRemainingTokens": 108000,
+    "autoCompactThreshold": 80000,
+    "autoCompactRemainingTokens": 80000,
+    "flushCount": 0,
+    "flushCycleArmed": true,
+    "updatedAt": 1772580000000,
+    "formatted": {
+      "inputTokens": "0",
+      "outputTokens": "0",
+      "contextTokens": "0",
+      "contextWindow": "128.0K",
+      "contextRemainingTokens": "128.0K",
+      "hardContextBudget": "108.0K",
+      "autoCompactThreshold": "80.0K"
+    }
+  },
+  "tokenUsage": {
+    "...": "与 token_usage 相同，兼容 camelCase 读取"
+  }
 }
 ```
 
@@ -139,6 +167,7 @@ Content-Type: application/json
 
 - 该接口支持 `CORS`
 - 如果你不想单独走 HTTP，也可以直接在 WebSocket `hello` 时让服务端生成 `session_id`
+- `token_usage` / `tokenUsage` 会返回该会话当前累计 token 占用，适合前端在建会话后立即渲染右下角占用信息
 
 ### 3.3 上传图片和文件
 
@@ -365,6 +394,67 @@ ws://<host>:18081/ws/web
 8. 如存在过程信息，服务端继续返回 `process_start / process_delta / process_step`
 9. 服务端最终返回 `reply_final`
 
+### 4.2.1 Token 占用字段
+
+Web 渠道现在会在多个响应和事件中附带统一的 token 占用快照：
+
+- `token_usage`
+- `tokenUsage`
+
+两者内容相同，只是分别兼容 snake_case 和 camelCase 读取。
+
+字段定义：
+
+```json
+{
+  "inputTokens": 4200,
+  "outputTokens": 1800,
+  "contextTokens": 115000,
+  "contextWindow": 128000,
+  "contextUsagePercent": 90,
+  "contextRemainingTokens": 13000,
+  "contextRemainingPercent": 10,
+  "hardContextBudget": 108000,
+  "hardContextRemainingTokens": 0,
+  "autoCompactThreshold": 80000,
+  "autoCompactRemainingTokens": 0,
+  "flushCount": 1,
+  "flushCycleArmed": false,
+  "updatedAt": 1772580000800,
+  "formatted": {
+    "inputTokens": "4.2K",
+    "outputTokens": "1.8K",
+    "contextTokens": "115.0K",
+    "contextWindow": "128.0K",
+    "contextRemainingTokens": "13.0K",
+    "hardContextBudget": "108.0K",
+    "autoCompactThreshold": "80.0K"
+  }
+}
+```
+
+字段说明：
+
+- `inputTokens`：当前会话累计输入 token
+- `outputTokens`：当前会话累计输出 token
+- `contextTokens`：当前会话上下文累计 token，占用展示建议优先使用这个字段
+- `contextWindow`：配置的上下文窗口上限
+- `contextUsagePercent`：`contextTokens / contextWindow` 的百分比
+- `contextRemainingTokens`：距离 `contextWindow` 还剩多少 token
+- `hardContextBudget`：扣除 `reserve_tokens` 后的硬预算
+- `autoCompactThreshold`：自动压缩阈值
+- `flushCount`：当前会话已触发的 memory flush 次数
+- `flushCycleArmed`：当前是否允许再次触发 flush
+- `updatedAt`：服务端生成该快照的时间戳
+- `formatted.*`：服务端已格式化好的显示文案，前端可直接展示，也可自行格式化
+
+推荐前端展示逻辑：
+
+- 右下角主要显示 `contextUsagePercent`
+- hover/展开时显示 `contextTokens / contextWindow`
+- 如需展示“自动压缩阈值”，用 `autoCompactThreshold`
+- 如需展示“硬预算”，用 `hardContextBudget`
+
 ### 4.3 客户端 -> 服务端事件
 
 #### `hello`
@@ -429,6 +519,30 @@ ws://<host>:18081/ws/web
 }
 ```
 
+#### `cancel`
+
+用于中断当前会话中正在执行的一轮请求。
+
+```json
+{
+  "type": "cancel",
+  "session_id": "wsn_5c9d7f1e9d4b4f73a49a5f1e4305a4ae",
+  "request_id": "msg_001"
+}
+```
+
+字段说明：
+
+- `session_id`：建议必填，用于定位要中断的会话
+- `request_id`：可选；传了则只允许中断指定请求，不传则默认中断该会话当前正在执行的请求
+
+推荐前端行为：
+
+- 点击“中断”按钮时，发送 `type=cancel`
+- 如果当前界面明确知道正在执行的是哪条消息，建议同时传 `request_id`
+- 发送后先把按钮切成 loading/disabled，等待 `cancel_ack`
+- 收到 `cancel_ack.status=accepted` 后，继续等待服务端返回最终的 `reply_cancelled`
+
 ### 4.4 服务端 -> 客户端事件
 
 #### `hello_required`
@@ -461,7 +575,12 @@ ws://<host>:18081/ws/web
   "api_path": "/api/web/sessions",
   "upload_api_path": "/api/web/uploads",
   "authenticated": true,
-  "serverTime": 1772580000000
+  "serverTime": 1772580000000,
+  "token_usage": {
+    "contextTokens": 0,
+    "contextWindow": 128000,
+    "contextUsagePercent": 0
+  }
 }
 ```
 
@@ -470,6 +589,7 @@ ws://<host>:18081/ws/web
 - `session_id` 一定要缓存下来
 - 后续续聊时传回这个值
 - `upload_api_path` 可直接给外部前端做上传入口
+- `hello_ack.token_usage` 可用于页面首次建立连接或刷新重连后的占用恢复
 
 #### `dispatch_ack`
 
@@ -480,7 +600,12 @@ ws://<host>:18081/ws/web
   "request_id": "msg_001",
   "session_id": "wsn_5c9d7f1e9d4b4f73a49a5f1e4305a4ae",
   "status": "processed",
-  "timestamp": 1772580000100
+  "timestamp": 1772580000100,
+  "token_usage": {
+    "contextTokens": 2300,
+    "contextWindow": 128000,
+    "contextUsagePercent": 2
+  }
 }
 ```
 
@@ -491,6 +616,33 @@ ws://<host>:18081/ws/web
 - `skipped`
 - `error`
 
+#### `cancel_ack`
+
+```json
+{
+  "type": "cancel_ack",
+  "session_id": "wsn_xxx",
+  "request_id": "msg_001",
+  "status": "accepted",
+  "timestamp": 1772580000150
+}
+```
+
+状态：
+
+- `accepted`：中断请求已被服务端受理
+- `already_cancelled`：该请求之前已经发起过中断
+- `not_found`：当前会话没有活跃请求，或 `request_id` 与当前活跃请求不匹配
+- `unsupported`：当前服务端未开启中断能力
+- `error`：服务端处理取消请求时发生异常
+
+说明：
+
+- `cancel_ack` 只表示“服务端已收到并登记中断请求”，不代表最终回复已经停止
+- 前端收到 `accepted` 后，仍应继续等待 `reply_cancelled` 或 `reply_final`
+- 如果收到 `not_found`，通常表示当前这轮已经结束，或者前端传错了 `request_id`
+- 如果当前活跃请求正在执行 `exec` 工具，服务端会尝试终止对应的子进程
+
 #### `reply_start`
 
 ```json
@@ -498,9 +650,20 @@ ws://<host>:18081/ws/web
   "type": "reply_start",
   "request_id": "msg_001",
   "session_id": "wsn_xxx",
-  "timestamp": 1772580000200
+  "timestamp": 1772580000200,
+  "token_usage": {
+    "inputTokens": 4200,
+    "contextTokens": 4200,
+    "contextWindow": 128000,
+    "contextUsagePercent": 3
+  }
 }
 ```
+
+说明：
+
+- `reply_start.token_usage` 一般反映“本轮用户输入入账后”的会话占用
+- 如果你希望右下角尽早刷新，建议在收到 `reply_start` 时就更新显示
 
 #### `process_start`
 
@@ -612,7 +775,14 @@ ws://<host>:18081/ws/web
   },
   "attachments": [],
   "finishReason": "completed",
-  "timestamp": 1772580000800
+  "timestamp": 1772580000800,
+  "token_usage": {
+    "inputTokens": 4200,
+    "outputTokens": 1800,
+    "contextTokens": 6000,
+    "contextWindow": 128000,
+    "contextUsagePercent": 5
+  }
 }
 ```
 
@@ -623,6 +793,7 @@ ws://<host>:18081/ws/web
 - `reply_final.text` 是最终正文，必须优先使用
 - `reply_final.process` 是完整的过程快照，前端应用它来校正本地累积的 `process_*` 状态
 - 建议以前端本地累积 `process_delta / process_step`，最后用 `reply_final.process` 覆盖校正
+- `reply_final.token_usage` 一般是“本轮 assistant 输出入账后”的最新会话占用，推荐作为右下角显示的主更新源
 
 #### `tool_start` / `tool_end`
 
@@ -663,6 +834,65 @@ ws://<host>:18081/ws/web
   "timestamp": 1772580000600
 }
 ```
+
+说明：
+
+- `reply_error` 同样可能携带 `token_usage`
+- 即使这一轮失败，前端也可以继续刷新当前会话的占用显示
+
+#### `reply_cancelled`
+
+```json
+{
+  "type": "reply_cancelled",
+  "request_id": "msg_001",
+  "session_id": "wsn_xxx",
+  "text": "已经生成的部分内容",
+  "reason": "cancelled_by_user",
+  "timestamp": 1772580000650,
+  "token_usage": {
+    "inputTokens": 4200,
+    "outputTokens": 0,
+    "contextTokens": 4200,
+    "contextWindow": 128000,
+    "contextUsagePercent": 3
+  }
+}
+```
+
+说明：
+
+- `reply_cancelled` 表示当前正在执行的一轮回复已被中断
+- `text` 可能包含中断前已经生成的部分可见内容，也可能为空
+- `reason` 当前固定为 `cancelled_by_user`
+- 前端应把这一轮 UI 状态收敛成“已停止”，不要继续等待 `reply_final`
+- 当前实现是“协作式流中断 + exec 子进程终止”：
+  服务端会尽快停止向前端继续推送结果，并尝试终止当前活跃的 `exec` 子进程
+  但对于不走 `exec` 的长耗时外部调用，仍不承诺一定能立刻停止
+
+#### `session_state`
+
+```json
+{
+  "type": "session_state",
+  "request_id": "msg_001",
+  "session_id": "wsn_xxx",
+  "reason": "memory_flush",
+  "timestamp": 1772580000900,
+  "token_usage": {
+    "contextTokens": 0,
+    "contextWindow": 128000,
+    "contextUsagePercent": 0,
+    "flushCount": 1
+  }
+}
+```
+
+说明：
+
+- 该事件用于主动同步会话状态变化
+- 当前已用于 `memory_flush` 之后，把压缩后的最新 token 占用推给前端
+- 如果你右下角需要像 Codex 一样在压缩后立刻跳变，应监听这个事件
 
 #### `error`
 
@@ -706,6 +936,38 @@ ws://<host>:18081/ws/web
 3. 收到 `reply_final.process` 后，用它覆盖本地过程状态，避免增量丢失或重复
 
 这样可以避免把“执行过程文本”直接混到主回答里。
+
+### 中断按钮接入建议
+
+如果你的前端后续要在右下角或消息气泡附近提供“停止生成”按钮，推荐顺序：
+
+1. 在收到 `dispatch_ack` 后，记录当前活跃的 `session_id + request_id`
+2. 在收到 `reply_start` 后，把按钮切到可点击状态
+3. 用户点击按钮时，发送 `cancel`
+4. 收到 `cancel_ack.status=accepted` 后，把按钮切到“中断中”
+5. 收到 `reply_cancelled` 后，结束 loading，并把该轮消息标记为“已中断”
+
+建议注意：
+
+- 如果一轮请求已经收到 `reply_final` 或 `reply_error`，就不要再发送 `cancel`
+- 如果用户连续点击多次，前端可以自行去重；服务端会返回 `already_cancelled`
+- 如果你只维护单会话单活跃请求，也仍建议保留 `request_id`，这样更稳
+
+### Token 占用显示建议
+
+如果你要在聊天窗口右下角展示 token 占用，推荐顺序：
+
+1. 页面初始化或重连时，读取 `hello_ack.token_usage`
+2. 如果走 HTTP 建会话，优先读取 `/api/web/sessions` 返回里的 `token_usage`
+3. 收到 `reply_start` 时，先用该事件里的 `token_usage` 更新
+4. 收到 `reply_final` 时，再用 `reply_final.token_usage` 覆盖
+5. 收到 `session_state(reason=memory_flush)` 时，再次刷新，确保压缩后的数字正确
+
+最稳妥的前端策略是：
+
+- 始终以“最后一个携带 `token_usage` 的事件”为准
+- 右下角主展示用 `contextUsagePercent`
+- 详情浮层展示 `contextTokens / contextWindow`
 
 ### 方案 A：最简接入
 

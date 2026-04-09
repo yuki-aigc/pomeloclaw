@@ -48,6 +48,7 @@ export interface ExecOptions {
     maxOutputLength?: number;
     policyMode?: 'enforce' | 'deny-only';
     callId?: string;
+    abortSignal?: AbortSignal;
 }
 
 interface OutputBufferState {
@@ -136,6 +137,17 @@ function finalizeOutput(state: OutputBufferState, maxLength: number): { text: st
         text: `${head}${truncateMsg}`,
         truncated: true,
     };
+}
+
+function describeAbortReason(signal: AbortSignal | undefined): string {
+    const reason = signal?.reason;
+    if (reason instanceof Error && reason.message.trim()) {
+        return reason.message.trim();
+    }
+    if (typeof reason === 'string' && reason.trim()) {
+        return reason.trim();
+    }
+    return 'Command aborted by request cancellation';
 }
 
 /**
@@ -239,12 +251,28 @@ export async function runCommand(
 
     const command = expandCommandToken(parsed.parsed.command, runtimeEnv);
     const args = parsed.parsed.args.map((arg) => expandCommandToken(arg, runtimeEnv));
+    const abortSignal = options.abortSignal;
+
+    if (abortSignal?.aborted) {
+        return {
+            success: false,
+            stdout: '',
+            stderr: '',
+            exitCode: null,
+            signal: null,
+            error: describeAbortReason(abortSignal),
+            metadata: buildMetadata({}),
+        };
+    }
 
     return new Promise((resolve) => {
         const stdoutState: OutputBufferState = { text: '', totalLength: 0, truncated: false };
         const stderrState: OutputBufferState = { text: '', totalLength: 0, truncated: false };
         let timedOut = false;
+        let aborted = false;
         let settled = false;
+        let abortError: string | undefined;
+        let forceKillTimer: NodeJS.Timeout | null = null;
 
         const child = spawn(command, args, {
             cwd: finalCwd,
@@ -260,6 +288,42 @@ export async function runCommand(
             }
         }, timeoutMs);
 
+        const cleanupAbortHandling = () => {
+            if (forceKillTimer) {
+                clearTimeout(forceKillTimer);
+                forceKillTimer = null;
+            }
+            if (abortSignal) {
+                abortSignal.removeEventListener('abort', handleAbort);
+            }
+        };
+
+        const handleAbort = () => {
+            if (settled || timedOut) {
+                return;
+            }
+            aborted = true;
+            abortError = describeAbortReason(abortSignal);
+            try {
+                child.kill('SIGTERM');
+            } catch {
+                return;
+            }
+            forceKillTimer = setTimeout(() => {
+                if (!settled) {
+                    try {
+                        child.kill('SIGKILL');
+                    } catch {
+                        // ignore late kill failures
+                    }
+                }
+            }, 1500);
+        };
+
+        if (abortSignal) {
+            abortSignal.addEventListener('abort', handleAbort, { once: true });
+        }
+
         child.stdout?.on('data', (data: Buffer) => {
             appendOutputChunk(stdoutState, data.toString(), maxOutputLength);
         });
@@ -272,6 +336,7 @@ export async function runCommand(
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            cleanupAbortHandling();
             const stdoutTruncated = finalizeOutput(stdoutState, maxOutputLength);
             const stderrTruncated = finalizeOutput(stderrState, maxOutputLength);
             resolve({
@@ -280,7 +345,7 @@ export async function runCommand(
                 stderr: stderrTruncated.text,
                 exitCode: null,
                 signal: null,
-                error: err.message,
+                error: aborted ? abortError || describeAbortReason(abortSignal) : err.message,
                 metadata: buildMetadata({
                     finishedAtMs: Date.now(),
                     pid: childPid,
@@ -294,16 +359,21 @@ export async function runCommand(
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            cleanupAbortHandling();
             const stdoutTruncated = finalizeOutput(stdoutState, maxOutputLength);
             const stderrTruncated = finalizeOutput(stderrState, maxOutputLength);
             resolve({
-                success: code === 0 && !timedOut,
+                success: code === 0 && !timedOut && !aborted,
                 stdout: stdoutTruncated.text,
                 stderr: stderrTruncated.text,
                 exitCode: code,
                 signal,
                 timedOut,
-                error: timedOut ? `Command timed out after ${timeoutMs}ms` : undefined,
+                error: timedOut
+                    ? `Command timed out after ${timeoutMs}ms`
+                    : aborted
+                        ? abortError || describeAbortReason(abortSignal)
+                        : undefined,
                 metadata: buildMetadata({
                     finishedAtMs: Date.now(),
                     pid: childPid,

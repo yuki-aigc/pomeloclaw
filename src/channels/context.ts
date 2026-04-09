@@ -9,6 +9,8 @@ export interface ChannelConversationContext {
     sessionWebhook?: string;
     workspaceRoot?: string;
     pendingReplyFiles?: string[];
+    abortSignal?: AbortSignal;
+    requestId?: string;
 }
 
 const channelContextStorage = new AsyncLocalStorage<ChannelConversationContext>();
@@ -22,6 +24,29 @@ export function withChannelConversationContext<T>(
 
 export function getChannelConversationContext(): ChannelConversationContext | undefined {
     return channelContextStorage.getStore();
+}
+
+export function withChannelAbortSignal<T>(
+    abortSignal: AbortSignal,
+    requestId: string,
+    fn: () => Promise<T>
+): Promise<T> {
+    const current = channelContextStorage.getStore();
+    if (!current) {
+        return fn();
+    }
+    return channelContextStorage.run(
+        {
+            ...current,
+            abortSignal,
+            requestId,
+        },
+        fn,
+    );
+}
+
+export function getChannelAbortSignal(): AbortSignal | undefined {
+    return channelContextStorage.getStore()?.abortSignal;
 }
 
 export function queueChannelReplyFile(filePath: string): boolean {

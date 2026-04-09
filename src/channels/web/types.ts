@@ -8,6 +8,32 @@ export interface WebLogger {
     error: (message: string, ...args: unknown[]) => void;
 }
 
+export interface WebTokenUsagePayload {
+    inputTokens: number;
+    outputTokens: number;
+    contextTokens: number;
+    contextWindow: number;
+    contextUsagePercent: number;
+    contextRemainingTokens: number;
+    contextRemainingPercent: number;
+    hardContextBudget: number;
+    hardContextRemainingTokens: number;
+    autoCompactThreshold: number;
+    autoCompactRemainingTokens: number;
+    flushCount: number;
+    flushCycleArmed: boolean;
+    updatedAt: number;
+    formatted: {
+        inputTokens: string;
+        outputTokens: string;
+        contextTokens: string;
+        contextWindow: string;
+        contextRemainingTokens: string;
+        hardContextBudget: string;
+        autoCompactThreshold: string;
+    };
+}
+
 export interface WebHelloPayload {
     type: 'hello';
     token?: string;
@@ -57,7 +83,19 @@ export interface WebPingPayload {
     timestamp?: number;
 }
 
-export type WebClientEnvelope = WebHelloPayload | WebMessagePayload | WebPingPayload;
+export interface WebCancelPayload {
+    type: 'cancel';
+    request_id?: string;
+    requestId?: string;
+    message_id?: string;
+    messageId?: string;
+    session_id?: string;
+    sessionId?: string;
+    conversationId?: string;
+    metadata?: Record<string, unknown>;
+}
+
+export type WebClientEnvelope = WebHelloPayload | WebMessagePayload | WebPingPayload | WebCancelPayload;
 
 export interface WebServerEnvelope {
     type: string;

@@ -44,6 +44,7 @@ import {
 import type {
     WebAttachmentPayload,
     WebAttachmentRecord,
+    WebCancelPayload,
     WebClientEnvelope,
     WebConnectionState,
     WebHelloPayload,
@@ -51,6 +52,7 @@ import type {
     WebLogger,
     WebMessagePayload,
     WebServerEnvelope,
+    WebTokenUsagePayload,
     WebUploadedAttachmentPayload,
     WebUploadRecord,
 } from './types.js';
@@ -60,6 +62,13 @@ export interface WebChannelAdapterOptions {
     log: WebLogger;
     workspaceRoot: string;
     skillsRoot: string;
+    resolveTokenUsage?: (conversationId: string) => WebTokenUsagePayload | null;
+    onCancelRequest?: (params: { conversationId: string; requestId?: string; connectionId: string }) => Promise<{
+        ok: boolean;
+        requestId?: string;
+        alreadyCancelled?: boolean;
+        reason?: string;
+    }>;
 }
 
 export interface WebStreamRequest {
@@ -133,6 +142,26 @@ export class WebChannelAdapter implements ChannelAdapter {
     private readonly sessionRegistry = new WebSessionRegistry();
 
     constructor(private readonly options: WebChannelAdapterOptions) {}
+
+    private resolveTokenUsage(conversationId?: string): WebTokenUsagePayload | undefined {
+        const normalized = conversationId?.trim();
+        if (!normalized || !this.options.resolveTokenUsage) {
+            return undefined;
+        }
+        return this.options.resolveTokenUsage(normalized) || undefined;
+    }
+
+    private withTokenUsage(payload: WebServerEnvelope, conversationId?: string): WebServerEnvelope {
+        const tokenUsage = this.resolveTokenUsage(conversationId);
+        if (!tokenUsage) {
+            return payload;
+        }
+        return {
+            ...payload,
+            token_usage: tokenUsage,
+            tokenUsage: tokenUsage,
+        };
+    }
 
     async start(runtime: ChannelAdapterRuntime): Promise<void> {
         if (this.started) return;
@@ -239,7 +268,7 @@ export class WebChannelAdapter implements ChannelAdapter {
             timestamp: Date.now(),
         };
 
-        this.broadcastToConnections(targets, payload);
+        this.broadcastToConnections(targets, this.withTokenUsage(payload, request.inbound.conversationId));
     }
 
     async sendStreamEvent(request: WebStreamRequest): Promise<void> {
@@ -247,7 +276,7 @@ export class WebChannelAdapter implements ChannelAdapter {
         if (targets.size === 0) {
             throw new Error(`web stream target not found for conversation=${request.inbound.conversationId}`);
         }
-        this.broadcastToConnections(targets, request.payload);
+        this.broadcastToConnections(targets, this.withTokenUsage(request.payload, request.inbound.conversationId));
     }
 
     async sendProactive(request: ChannelProactiveRequest): Promise<void> {
@@ -546,6 +575,7 @@ export class WebChannelAdapter implements ChannelAdapter {
                 'content-type': 'application/json; charset=utf-8',
                 'cache-control': 'no-store',
             });
+            const tokenUsage = this.resolveTokenUsage(result.session.sessionId);
             res.end(JSON.stringify({
                 ok: true,
                 session_id: result.session.sessionId,
@@ -554,6 +584,8 @@ export class WebChannelAdapter implements ChannelAdapter {
                 session_title: result.session.sessionTitle,
                 created_at: result.session.createdAt,
                 reused: !result.created,
+                token_usage: tokenUsage,
+                tokenUsage: tokenUsage,
             }));
         } catch (error) {
             this.writeApiCorsHeaders(res);
@@ -1088,6 +1120,11 @@ export class WebChannelAdapter implements ChannelAdapter {
             return;
         }
 
+        if (envelope.type === 'cancel') {
+            await this.handleCancelMessage(state, envelope);
+            return;
+        }
+
         this.sendToConnection(state, {
             type: 'error',
             code: 'unsupported_type',
@@ -1142,7 +1179,7 @@ export class WebChannelAdapter implements ChannelAdapter {
 
         this.reindexConnection(state, previousConversation, previousUser);
 
-        this.sendToConnection(state, {
+        this.sendToConnection(state, this.withTokenUsage({
             type: 'hello_ack',
             connectionId: state.connectionId,
             connection_id: state.connectionId,
@@ -1160,7 +1197,7 @@ export class WebChannelAdapter implements ChannelAdapter {
             api_path: SESSION_API_PATH,
             upload_api_path: UPLOAD_API_PATH,
             serverTime: Date.now(),
-        });
+        }, state.conversationId));
     }
 
     private async handleClientMessage(state: WebConnectionState, payload: WebMessagePayload): Promise<void> {
@@ -1189,7 +1226,7 @@ export class WebChannelAdapter implements ChannelAdapter {
             sessionTitle: identity.sessionTitle,
         });
         if (!sessionResult.ok) {
-            this.sendToConnection(state, {
+            this.sendToConnection(state, this.withTokenUsage({
                 type: 'dispatch_ack',
                 messageId: identity.messageId,
                 message_id: identity.messageId,
@@ -1199,7 +1236,7 @@ export class WebChannelAdapter implements ChannelAdapter {
                 session_id: identity.requestedSessionId,
                 sessionId: identity.requestedSessionId,
                 timestamp: Date.now(),
-            });
+            }, identity.requestedSessionId));
             return;
         }
 
@@ -1217,7 +1254,7 @@ export class WebChannelAdapter implements ChannelAdapter {
             });
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
-            this.sendToConnection(state, {
+            this.sendToConnection(state, this.withTokenUsage({
                 type: 'dispatch_ack',
                 messageId: identity.messageId,
                 message_id: identity.messageId,
@@ -1227,7 +1264,7 @@ export class WebChannelAdapter implements ChannelAdapter {
                 session_id: state.conversationId,
                 sessionId: state.conversationId,
                 timestamp: Date.now(),
-            });
+            }, state.conversationId));
             return;
         }
         const inbound: ChannelInboundMessage = {
@@ -1262,7 +1299,7 @@ export class WebChannelAdapter implements ChannelAdapter {
             dispatchResult = await this.runtime.onInbound(inbound);
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
-            this.sendToConnection(state, {
+            this.sendToConnection(state, this.withTokenUsage({
                 type: 'dispatch_ack',
                 messageId: identity.messageId,
                 message_id: identity.messageId,
@@ -1272,12 +1309,12 @@ export class WebChannelAdapter implements ChannelAdapter {
                 session_id: state.conversationId,
                 sessionId: state.conversationId,
                 timestamp: Date.now(),
-            });
+            }, state.conversationId));
             this.options.log.error('[WebAdapter] dispatch failed(' + state.connectionId + '): ' + reason);
             return;
         }
 
-        this.sendToConnection(state, {
+        this.sendToConnection(state, this.withTokenUsage({
             type: 'dispatch_ack',
             messageId: identity.messageId,
             message_id: identity.messageId,
@@ -1287,7 +1324,72 @@ export class WebChannelAdapter implements ChannelAdapter {
             session_id: state.conversationId,
             sessionId: state.conversationId,
             timestamp: Date.now(),
-        });
+        }, state.conversationId));
+    }
+
+    private async handleCancelMessage(state: WebConnectionState, payload: WebCancelPayload): Promise<void> {
+        const conversationId = tryTrim(payload.session_id)
+            || tryTrim(payload.sessionId)
+            || tryTrim(payload.conversationId)
+            || state.conversationId;
+        const requestId = tryTrim(payload.request_id)
+            || tryTrim(payload.requestId)
+            || tryTrim(payload.message_id)
+            || tryTrim(payload.messageId);
+
+        if (!conversationId) {
+            this.sendToConnection(state, {
+                type: 'cancel_ack',
+                status: 'error',
+                reason: '缺少 session_id，无法定位要中断的会话',
+                timestamp: Date.now(),
+            });
+            return;
+        }
+
+        if (!this.options.onCancelRequest) {
+            this.sendToConnection(state, this.withTokenUsage({
+                type: 'cancel_ack',
+                status: 'unsupported',
+                session_id: conversationId,
+                sessionId: conversationId,
+                request_id: requestId,
+                requestId: requestId,
+                reason: '服务端未启用会话中断能力',
+                timestamp: Date.now(),
+            }, conversationId));
+            return;
+        }
+
+        try {
+            const result = await this.options.onCancelRequest({
+                conversationId,
+                requestId,
+                connectionId: state.connectionId,
+            });
+
+            this.sendToConnection(state, this.withTokenUsage({
+                type: 'cancel_ack',
+                status: result.ok ? (result.alreadyCancelled ? 'already_cancelled' : 'accepted') : 'not_found',
+                session_id: conversationId,
+                sessionId: conversationId,
+                request_id: result.requestId || requestId,
+                requestId: result.requestId || requestId,
+                reason: result.reason,
+                timestamp: Date.now(),
+            }, conversationId));
+        } catch (error) {
+            this.sendToConnection(state, this.withTokenUsage({
+                type: 'cancel_ack',
+                status: 'error',
+                session_id: conversationId,
+                sessionId: conversationId,
+                request_id: requestId,
+                requestId: requestId,
+                reason: error instanceof Error ? error.message : String(error),
+                timestamp: Date.now(),
+            }, conversationId));
+        }
     }
 
     private handleDisconnect(state: WebConnectionState): void {

@@ -17,6 +17,7 @@ import {
 } from './middleware/index.js';
 import { resolveMemoryScope, withForcedMemoryScope, type MemoryScope } from './middleware/memory-scope.js';
 import { consumeQueuedWebReplyFiles } from './channels/web/context.js';
+import { withChannelAbortSignal } from './channels/context.js';
 import { buildAttachmentMediaContext } from './channels/media-context.js';
 import {
     createRuntimeConsoleLogger,
@@ -36,6 +37,11 @@ import {
     extractProcessPreview,
     type WebProcessBlock,
 } from './channels/web/process.js';
+import {
+    buildWebTokenUsagePayload,
+    createEmptyWebTokenUsageSource,
+} from './channels/web/token-usage.js';
+import { WebConversationCancelRegistry } from './channels/web/cancel.js';
 import type { RuntimeLogWriter } from './log/runtime.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand, parseSkillSlashCommand } from './skills/index.js';
 import { executeCronSlashCommand } from './cron/slash.js';
@@ -70,6 +76,8 @@ export type WebSlashCommand =
     | { type: 'voice'; mode: 'status' | 'toggle'; enabled?: boolean }
     | { type: 'help' }
     | { type: 'unknown'; command: string };
+
+const WEB_CANCELLED_ERROR = 'WEB_REQUEST_CANCELLED';
 
 function composeInboundWebText(text: string, mediaContext: string | null): string {
     const normalizedText = text.trim();
@@ -323,6 +331,27 @@ function getOrCreateConversationState(
     return created;
 }
 
+function resolveWebTokenUsage(
+    conversationStates: Map<string, WebConversationRuntimeState>,
+    conversationId: string,
+    config: ReturnType<typeof loadConfig>,
+) {
+    const state = conversationStates.get(conversationId);
+    if (!state) {
+        return buildWebTokenUsagePayload(
+            createEmptyWebTokenUsageSource(),
+            config.agent.compaction,
+        );
+    }
+
+    return buildWebTokenUsagePayload({
+        flushState: state.flushState,
+        totalInputTokens: state.totalInputTokens,
+        totalOutputTokens: state.totalOutputTokens,
+        lastUpdatedAt: state.lastUpdatedAt,
+    }, config.agent.compaction);
+}
+
 async function persistWebTurn(params: {
     workspacePath: string;
     config: ReturnType<typeof loadConfig>;
@@ -505,6 +534,7 @@ export async function startWebService(options?: {
     let webAdapter: WebChannelAdapter | null = null;
     let isShuttingDown = false;
     const conversationStates = new Map<string, WebConversationRuntimeState>();
+    const cancelRegistry = new WebConversationCancelRegistry();
     const memoryWorkspacePath = resolve(process.cwd(), config.agent.workspace);
     const skillsPath = resolve(process.cwd(), config.agent.skills_dir);
     let compactionModelPromise: Promise<BaseChatModel> | null = null;
@@ -597,217 +627,253 @@ export async function startWebService(options?: {
                     return;
                 }
 
-                const compactionModel = await getCompactionModel();
-                const scope = resolveMemoryScope(config.agent.memory.session_isolation);
-                conversationState.scope = scope;
-                const shouldInjectStartupMemory = !conversationState.startupMemoryInjected;
-                const preparedUserMessages = await prepareConversationUserMessages({
-                    userText,
-                    workspacePath: memoryWorkspacePath,
-                    scopeKey: scope.key,
-                    includeStartupMemory: shouldInjectStartupMemory,
-                });
-                if (preparedUserMessages.enforceMemorySearch) {
-                    log.info(`[Web] Memory recall intent detected, enforce memory_search preflight (${message.conversationId})`);
-                }
-                if (shouldInjectStartupMemory) {
-                    conversationState.startupMemoryInjected = true;
-                }
-                if (preparedUserMessages.startupMemoryInjection) {
-                    log.info(
-                        `[Web] Startup memory injection enabled for ${message.conversationId}, chars=${preparedUserMessages.startupMemoryInjection.length}, scope=${scope.key}`
-                    );
-                }
-                await persistWebTurn({
-                    workspacePath: memoryWorkspacePath,
-                    config,
-                    log,
-                    conversationId: message.conversationId,
-                    role: 'user',
-                    content: userText,
-                    messageId: message.messageId,
-                    senderId: message.senderId,
-                    senderName: message.senderName,
-                    metadata: {
+                const abortController = new AbortController();
+                cancelRegistry.start(message.conversationId, message.messageId, abortController);
+                const isRequestCancelled = () =>
+                    abortController.signal.aborted
+                    || cancelRegistry.isCancelled(message.conversationId, message.messageId);
+
+                await withChannelAbortSignal(abortController.signal, message.messageId, async () => {
+                    try {
+                    const compactionModel = await getCompactionModel();
+                    const scope = resolveMemoryScope(config.agent.memory.session_isolation);
+                    conversationState.scope = scope;
+                    const shouldInjectStartupMemory = !conversationState.startupMemoryInjected;
+                    const preparedUserMessages = await prepareConversationUserMessages({
+                        userText,
+                        workspacePath: memoryWorkspacePath,
                         scopeKey: scope.key,
-                        direction: 'inbound',
-                        attachmentCount: message.attachments?.length || 0,
-                    },
-                });
-                const inputAccounting = await applyTurnTokenAccounting({
-                    flushState: conversationState.flushState,
-                    text: userText,
-                    model: compactionModel,
-                    compactionConfig: config.agent.compaction,
-                });
-                conversationState.flushState = inputAccounting.flushState;
-                conversationState.totalInputTokens += inputAccounting.tokenDelta;
+                        includeStartupMemory: shouldInjectStartupMemory,
+                    });
+                    if (preparedUserMessages.enforceMemorySearch) {
+                        log.info(`[Web] Memory recall intent detected, enforce memory_search preflight (${message.conversationId})`);
+                    }
+                    if (shouldInjectStartupMemory) {
+                        conversationState.startupMemoryInjected = true;
+                    }
+                    if (preparedUserMessages.startupMemoryInjection) {
+                        log.info(
+                            `[Web] Startup memory injection enabled for ${message.conversationId}, chars=${preparedUserMessages.startupMemoryInjection.length}, scope=${scope.key}`
+                        );
+                    }
+                    await persistWebTurn({
+                        workspacePath: memoryWorkspacePath,
+                        config,
+                        log,
+                        conversationId: message.conversationId,
+                        role: 'user',
+                        content: userText,
+                        messageId: message.messageId,
+                        senderId: message.senderId,
+                        senderName: message.senderName,
+                        metadata: {
+                            scopeKey: scope.key,
+                            direction: 'inbound',
+                            attachmentCount: message.attachments?.length || 0,
+                        },
+                    });
+                    const inputAccounting = await applyTurnTokenAccounting({
+                        flushState: conversationState.flushState,
+                        text: userText,
+                        model: compactionModel,
+                        compactionConfig: config.agent.compaction,
+                    });
+                    conversationState.flushState = inputAccounting.flushState;
+                    conversationState.totalInputTokens += inputAccounting.tokenDelta;
+                    conversationState.lastUpdatedAt = Date.now();
 
-                const threadId = conversationState.threadId;
-                const invocationMessages = await conversationRuntime.buildBootstrapMessages({
-                    threadId,
-                    workspacePath: memoryWorkspacePath,
-                    scopeKey: scope.key,
-                });
+                    const threadId = conversationState.threadId;
+                    const invocationMessages = await conversationRuntime.buildBootstrapMessages({
+                        threadId,
+                        workspacePath: memoryWorkspacePath,
+                        scopeKey: scope.key,
+                    });
 
-                invocationMessages.push(...preparedUserMessages.userMessages);
+                    invocationMessages.push(...preparedUserMessages.userMessages);
 
-                await adapter.sendStreamEvent({
-                    inbound: message,
-                    payload: {
-                        type: 'reply_start',
+                    const buildProcessEventBase = () => ({
                         sourceMessageId: message.messageId,
                         request_id: message.messageId,
                         conversationId: message.conversationId,
                         session_id: message.conversationId,
-                        timestamp: Date.now(),
-                    },
-                });
-
-                let visibleStreamResponse = '';
-                let processVisibleResponse = '';
-                let fullResponse = '';
-                let processStarted = false;
-                const processBlocks: WebProcessBlock[] = [];
-                let attachments = [];
-
-                const buildProcessEventBase = () => ({
-                    sourceMessageId: message.messageId,
-                    request_id: message.messageId,
-                    conversationId: message.conversationId,
-                    session_id: message.conversationId,
-                });
-
-                const emitProcessStart = async () => {
-                    if (processStarted) {
-                        return;
-                    }
-                    processStarted = true;
-                    await adapter.sendStreamEvent({
-                        inbound: message,
-                        payload: {
-                            type: 'process_start',
-                            ...buildProcessEventBase(),
-                            title: '执行过程',
-                            default_collapsed: true,
-                            timestamp: Date.now(),
-                        },
                     });
-                };
 
-                const emitProcessDelta = async (delta: string) => {
-                    if (!delta.trim()) {
-                        return;
-                    }
-                    await emitProcessStart();
-                    appendProcessCommentaryBlock(processBlocks, delta);
-                    await adapter.sendStreamEvent({
-                        inbound: message,
-                        payload: {
-                            type: 'process_delta',
-                            ...buildProcessEventBase(),
-                            block_type: 'commentary',
-                            delta,
-                            timestamp: Date.now(),
-                        },
-                    });
-                };
+                    let visibleStreamResponse = '';
+                    let processVisibleResponse = '';
+                    let fullResponse = '';
+                    let processStarted = false;
+                    const processBlocks: WebProcessBlock[] = [];
+                    let attachments = [];
+                    let cancellationNotified = false;
 
-                const emitProcessToolStep = async (
-                    phase: 'start' | 'end',
-                    toolName: string | undefined,
-                    preview: string | undefined,
-                ) => {
-                    const normalizedToolName = toolName?.trim() || 'unknown';
-                    await emitProcessStart();
-                    processBlocks.push({
-                        type: 'tool',
-                        phase,
-                        toolName: normalizedToolName,
-                        preview,
-                    });
-                    await adapter.sendStreamEvent({
-                        inbound: message,
-                        payload: {
-                            type: 'process_step',
-                            ...buildProcessEventBase(),
-                            step_type: phase === 'start' ? 'tool_start' : 'tool_end',
-                            tool_name: normalizedToolName,
-                            preview,
-                            timestamp: Date.now(),
-                        },
-                    });
-                };
-
-                try {
-                    const streamState = await consumeAgentStreamEvents({
-                        eventStream: currentAgent.streamEvents(
-                            { messages: invocationMessages },
-                            {
-                                configurable: { thread_id: threadId },
-                                recursionLimit: config.agent.recursion_limit,
-                                version: 'v2',
+                    const notifyCancelled = async () => {
+                        if (cancellationNotified) {
+                            return;
+                        }
+                        cancellationNotified = true;
+                        conversationState.lastUpdatedAt = Date.now();
+                        await adapter.sendStreamEvent({
+                            inbound: message,
+                            payload: {
+                                type: 'reply_cancelled',
+                                ...buildProcessEventBase(),
+                                text: fullResponse || visibleStreamResponse || '',
+                                process: buildProcessPayload(processBlocks),
+                                reason: 'cancelled_by_user',
+                                timestamp: Date.now(),
                             },
-                        ),
-                        sanitizeText: sanitizeUserFacingText,
-                        shouldAcceptVisibleText: (candidate, state) => {
-                            if (!state.sawToolCall) {
-                                return true;
-                            }
-                            return !(
-                                isLikelyToolCallResidue(candidate)
-                                || isLikelyStructuredToolPayload(candidate)
-                            );
-                        },
-                        onVisibleResponseUpdated: async ({ candidate, delta, state }) => {
-                            visibleStreamResponse = candidate;
-                            if (!state.sawToolCall) {
-                                return;
-                            }
-                            if (!processVisibleResponse) {
-                                processVisibleResponse = candidate;
-                            } else {
-                                processVisibleResponse = candidate;
-                            }
-                            if (delta) {
-                                await emitProcessDelta(delta);
-                            }
-                        },
-                        onToolStart: async (event) => {
-                            if (visibleStreamResponse && !processVisibleResponse) {
-                                processVisibleResponse = visibleStreamResponse;
-                                await emitProcessDelta(visibleStreamResponse);
-                            }
-                            const preview = extractProcessPreview(event.data);
-                            await emitProcessToolStep('start', event.name, preview);
-                            await adapter.sendStreamEvent({
-                                inbound: message,
-                                payload: {
-                                    type: 'tool_start',
-                                    ...buildProcessEventBase(),
-                                    toolName: event.name,
-                                    summary: preview,
-                                    timestamp: Date.now(),
-                                },
-                            });
-                        },
-                        onToolEnd: async (event) => {
-                            const preview = extractProcessPreview(event.data);
-                            await emitProcessToolStep('end', event.name, preview);
-                            await adapter.sendStreamEvent({
-                                inbound: message,
-                                payload: {
-                                    type: 'tool_end',
-                                    ...buildProcessEventBase(),
-                                    toolName: event.name,
-                                    summary: preview,
-                                    timestamp: Date.now(),
-                                },
-                            });
+                        });
+                    };
+
+                    if (isRequestCancelled()) {
+                        await notifyCancelled();
+                        return;
+                    }
+
+                    await adapter.sendStreamEvent({
+                        inbound: message,
+                        payload: {
+                            type: 'reply_start',
+                            ...buildProcessEventBase(),
+                            timestamp: Date.now(),
                         },
                     });
-                    fullResponse = pickFinalStreamResponse(streamState);
-                    attachments = await adapter.registerReplyAttachments(consumeQueuedWebReplyFiles());
+
+                    const emitProcessStart = async () => {
+                        if (processStarted) {
+                            return;
+                        }
+                        processStarted = true;
+                        await adapter.sendStreamEvent({
+                            inbound: message,
+                            payload: {
+                                type: 'process_start',
+                                ...buildProcessEventBase(),
+                                title: '执行过程',
+                                default_collapsed: true,
+                                timestamp: Date.now(),
+                            },
+                        });
+                    };
+
+                    const emitProcessDelta = async (delta: string) => {
+                        if (!delta.trim()) {
+                            return;
+                        }
+                        await emitProcessStart();
+                        appendProcessCommentaryBlock(processBlocks, delta);
+                        await adapter.sendStreamEvent({
+                            inbound: message,
+                            payload: {
+                                type: 'process_delta',
+                                ...buildProcessEventBase(),
+                                block_type: 'commentary',
+                                delta,
+                                timestamp: Date.now(),
+                            },
+                        });
+                    };
+
+                    const emitProcessToolStep = async (
+                        phase: 'start' | 'end',
+                        toolName: string | undefined,
+                        preview: string | undefined,
+                    ) => {
+                        const normalizedToolName = toolName?.trim() || 'unknown';
+                        await emitProcessStart();
+                        processBlocks.push({
+                            type: 'tool',
+                            phase,
+                            toolName: normalizedToolName,
+                            preview,
+                        });
+                        await adapter.sendStreamEvent({
+                            inbound: message,
+                            payload: {
+                                type: 'process_step',
+                                ...buildProcessEventBase(),
+                                step_type: phase === 'start' ? 'tool_start' : 'tool_end',
+                                tool_name: normalizedToolName,
+                                preview,
+                                timestamp: Date.now(),
+                            },
+                        });
+                    };
+
+                    try {
+                        const streamState = await consumeAgentStreamEvents({
+                            eventStream: currentAgent.streamEvents(
+                                { messages: invocationMessages },
+                                {
+                                    configurable: { thread_id: threadId },
+                                    recursionLimit: config.agent.recursion_limit,
+                                    version: 'v2',
+                                },
+                            ),
+                            sanitizeText: sanitizeUserFacingText,
+                            shouldAcceptVisibleText: (candidate, state) => {
+                                if (!state.sawToolCall) {
+                                    return true;
+                                }
+                                return !(
+                                    isLikelyToolCallResidue(candidate)
+                                    || isLikelyStructuredToolPayload(candidate)
+                                );
+                            },
+                            onEvent: () => {
+                                if (isRequestCancelled()) {
+                                    throw new Error(WEB_CANCELLED_ERROR);
+                                }
+                            },
+                            onVisibleResponseUpdated: async ({ candidate, delta, state }) => {
+                                visibleStreamResponse = candidate;
+                                if (!state.sawToolCall) {
+                                    return;
+                                }
+                                if (!processVisibleResponse) {
+                                    processVisibleResponse = candidate;
+                                } else {
+                                    processVisibleResponse = candidate;
+                                }
+                                if (delta) {
+                                    await emitProcessDelta(delta);
+                                }
+                            },
+                            onToolStart: async (event) => {
+                                if (visibleStreamResponse && !processVisibleResponse) {
+                                    processVisibleResponse = visibleStreamResponse;
+                                    await emitProcessDelta(visibleStreamResponse);
+                                }
+                                const preview = extractProcessPreview(event.data);
+                                await emitProcessToolStep('start', event.name, preview);
+                                await adapter.sendStreamEvent({
+                                    inbound: message,
+                                    payload: {
+                                        type: 'tool_start',
+                                        ...buildProcessEventBase(),
+                                        toolName: event.name,
+                                        summary: preview,
+                                        timestamp: Date.now(),
+                                    },
+                                });
+                            },
+                            onToolEnd: async (event) => {
+                                const preview = extractProcessPreview(event.data);
+                                await emitProcessToolStep('end', event.name, preview);
+                                await adapter.sendStreamEvent({
+                                    inbound: message,
+                                    payload: {
+                                        type: 'tool_end',
+                                        ...buildProcessEventBase(),
+                                        toolName: event.name,
+                                        summary: preview,
+                                        timestamp: Date.now(),
+                                    },
+                                });
+                            },
+                        });
+                        fullResponse = pickFinalStreamResponse(streamState);
+                        attachments = await adapter.registerReplyAttachments(consumeQueuedWebReplyFiles());
 
                     if (!fullResponse && attachments.length > 0) {
                         fullResponse = '✅ 文件已生成，请下载附件。';
@@ -816,71 +882,92 @@ export async function startWebService(options?: {
                         fullResponse = '已处理，但没有可返回的文本结果。';
                     }
 
-                    const processPayload = buildProcessPayload(processBlocks);
-
-                    await adapter.sendStreamEvent({
-                        inbound: message,
-                        payload: {
-                            type: 'reply_final',
-                            ...buildProcessEventBase(),
+                        const outputAccounting = await applyTurnTokenAccounting({
+                            flushState: conversationState.flushState,
                             text: fullResponse,
-                            attachments,
-                            process: processPayload,
-                            finishReason: 'completed',
-                            timestamp: Date.now(),
-                        },
-                    });
+                            model: compactionModel,
+                            compactionConfig: config.agent.compaction,
+                        });
+                        conversationState.flushState = outputAccounting.flushState;
+                        conversationState.totalOutputTokens += outputAccounting.tokenDelta;
+                        conversationState.lastUpdatedAt = Date.now();
+                        const processPayload = buildProcessPayload(processBlocks);
 
-                    await persistWebTurn({
-                        workspacePath: memoryWorkspacePath,
-                        config,
-                        log,
-                        conversationId: message.conversationId,
-                        role: 'assistant',
-                        content: fullResponse,
-                        messageId: message.messageId,
-                        senderId: message.senderId,
-                        senderName: message.senderName,
-                        metadata: {
-                            scopeKey: scope.key,
-                            direction: 'outbound',
-                            attachmentCount: attachments.length,
-                        },
-                    });
-                    const outputAccounting = await applyTurnTokenAccounting({
-                        flushState: conversationState.flushState,
-                        text: fullResponse,
-                        model: compactionModel,
-                        compactionConfig: config.agent.compaction,
-                    });
-                    conversationState.flushState = outputAccounting.flushState;
-                    conversationState.totalOutputTokens += outputAccounting.tokenDelta;
-                    conversationState.lastUpdatedAt = Date.now();
-                    if (shouldTriggerMemoryFlush(conversationState.flushState, config.agent.compaction)) {
-                        await executeWebMemoryFlush({
-                            agent: currentAgent,
+                        await adapter.sendStreamEvent({
+                            inbound: message,
+                            payload: {
+                                type: 'reply_final',
+                                ...buildProcessEventBase(),
+                                text: fullResponse,
+                                attachments,
+                                process: processPayload,
+                                finishReason: 'completed',
+                                timestamp: Date.now(),
+                            },
+                        });
+
+                        await persistWebTurn({
+                            workspacePath: memoryWorkspacePath,
                             config,
-                            conversationId: message.conversationId,
-                            state: conversationState,
-                            scope,
                             log,
+                            conversationId: message.conversationId,
+                            role: 'assistant',
+                            content: fullResponse,
+                            messageId: message.messageId,
+                            senderId: message.senderId,
+                            senderName: message.senderName,
+                            metadata: {
+                                scopeKey: scope.key,
+                                direction: 'outbound',
+                                attachmentCount: attachments.length,
+                            },
+                        });
+
+                        cancelRegistry.finish(message.conversationId, message.messageId);
+
+                        if (shouldTriggerMemoryFlush(conversationState.flushState, config.agent.compaction)) {
+                            await executeWebMemoryFlush({
+                                agent: currentAgent,
+                                config,
+                                conversationId: message.conversationId,
+                                state: conversationState,
+                                scope,
+                                log,
+                            });
+                            await adapter.sendStreamEvent({
+                                inbound: message,
+                                payload: {
+                                    type: 'session_state',
+                                    ...buildProcessEventBase(),
+                                    reason: 'memory_flush',
+                                    timestamp: Date.now(),
+                                },
+                            });
+                        }
+                    } catch (error) {
+                        const reason = error instanceof Error ? error.message : String(error);
+                        if (reason === WEB_CANCELLED_ERROR) {
+                            log.info(`[Web] request cancelled (${message.conversationId}, request=${message.messageId})`);
+                            await notifyCancelled();
+                            return;
+                        }
+                        log.warn(`[Web] stream failed (${message.conversationId}): ${reason}`);
+                        const processPayload = buildProcessPayload(processBlocks);
+                        await adapter.sendStreamEvent({
+                            inbound: message,
+                            payload: {
+                                type: 'reply_error',
+                                ...buildProcessEventBase(),
+                                message: reason,
+                                process: processPayload,
+                                timestamp: Date.now(),
+                            },
                         });
                     }
-                } catch (error) {
-                    const reason = error instanceof Error ? error.message : String(error);
-                    log.warn(`[Web] stream failed (${message.conversationId}): ${reason}`);
-                    const processPayload = buildProcessPayload(processBlocks);
-                    await adapter.sendStreamEvent({
-                        inbound: message,
-                        payload: {
-                            type: 'reply_error',
-                            ...buildProcessEventBase(),
-                            message: reason,
-                            process: processPayload,
-                            timestamp: Date.now(),
-                        },
-                    });
-                }
+                    } finally {
+                        cancelRegistry.finish(message.conversationId, message.messageId);
+                    }
+                });
             });
 
             return { skipReply: true };
@@ -893,6 +980,10 @@ export async function startWebService(options?: {
         log,
         workspaceRoot: memoryWorkspacePath,
         skillsRoot: skillsPath,
+        resolveTokenUsage: (conversationId: string) =>
+            resolveWebTokenUsage(conversationStates, conversationId, config),
+        onCancelRequest: async ({ conversationId, requestId }) =>
+            cancelRegistry.cancel(conversationId, requestId),
     });
     gateway.registerAdapter(webAdapter);
     await gateway.start();

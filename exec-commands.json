@@ -32,7 +32,10 @@
         "pip",
         "pip3",
         "python3",
-        "pandoc"
+        "python",
+        "pandoc",
+        "cd",
+        "cat"
     ],
     "deniedCommands": [
         "rm",

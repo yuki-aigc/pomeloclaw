@@ -48,7 +48,70 @@ function buildRiskAssessment(
     };
 }
 
-const BLOCKED_OPERATOR_TOKENS = new Set(['|', '||', '&', '&&', ';', '>', '>>', '<', '<<']);
+function collectUnsafeShellOperators(command: string): {
+    hasSemicolon: boolean;
+    hasRedirection: boolean;
+    hasBacktick: boolean;
+} {
+    let quote: '"' | "'" | null = null;
+    let escaping = false;
+    let hasSemicolon = false;
+    let hasRedirection = false;
+    let hasBacktick = false;
+
+    for (let i = 0; i < command.length; i += 1) {
+        const ch = command[i];
+
+        if (escaping) {
+            escaping = false;
+            continue;
+        }
+
+        if (quote === "'") {
+            if (ch === "'") {
+                quote = null;
+            }
+            continue;
+        }
+
+        if (quote === '"') {
+            if (ch === '"') {
+                quote = null;
+                continue;
+            }
+            if (ch === '\\') {
+                escaping = true;
+            }
+            continue;
+        }
+
+        if (ch === '\\') {
+            escaping = true;
+            continue;
+        }
+
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            continue;
+        }
+
+        if (ch === ';') {
+            hasSemicolon = true;
+            continue;
+        }
+
+        if (ch === '>' || ch === '<') {
+            hasRedirection = true;
+            continue;
+        }
+
+        if (ch === '`') {
+            hasBacktick = true;
+        }
+    }
+
+    return { hasSemicolon, hasRedirection, hasBacktick };
+}
 
 /**
  * Assess command string risk before execution.
@@ -58,8 +121,8 @@ export function assessCommandRisk(command: string): CommandRiskAssessment {
     if (command.length > 4096) {
         return buildRiskAssessment('critical', ['Command length exceeds 4096 characters'], { blocked: true });
     }
-    if (/[\0\r\n]/.test(command)) {
-        return buildRiskAssessment('critical', ['Control characters are not allowed in command input'], { blocked: true });
+    if (command.includes('\0')) {
+        return buildRiskAssessment('critical', ['NUL bytes are not allowed in command input'], { blocked: true });
     }
 
     const parsed = parseCommandInput(command);
@@ -72,27 +135,9 @@ export function assessCommandRisk(command: string): CommandRiskAssessment {
     let blocked = false;
     let requiresApproval = false;
 
+    const unsafeOperators = collectUnsafeShellOperators(command);
+
     for (const token of parsed.parsed.tokens) {
-        if (BLOCKED_OPERATOR_TOKENS.has(token)) {
-            reasons.push(`Shell control operator "${token}" is not supported`);
-            blocked = true;
-            level = 'high';
-        }
-        if (token.includes(';')) {
-            reasons.push('Semicolon chaining is not allowed');
-            blocked = true;
-            level = 'high';
-        }
-        if (token.includes('>') || token.includes('<')) {
-            reasons.push('Redirection operators are not allowed');
-            blocked = true;
-            level = 'high';
-        }
-        if (token.includes('`')) {
-            reasons.push('Backtick command substitution is not allowed');
-            blocked = true;
-            level = 'high';
-        }
         if (token.includes('$(') || token.includes('${')) {
             reasons.push('Command substitution-like token detected');
             requiresApproval = true;
@@ -100,11 +145,22 @@ export function assessCommandRisk(command: string): CommandRiskAssessment {
         }
     }
 
-    const normalized = parsed.parsed.tokens.join(' ');
-    if (/\b(curl|wget)\b.*\|\s*(sh|bash|zsh)\b/i.test(normalized)) {
-        reasons.push('Pipe-to-shell pattern detected');
+    if (unsafeOperators.hasSemicolon) {
+        reasons.push('Semicolon chaining is not allowed');
         blocked = true;
-        level = 'critical';
+        level = 'high';
+    }
+
+    if (unsafeOperators.hasRedirection) {
+        reasons.push('Redirection operators are not allowed');
+        blocked = true;
+        level = 'high';
+    }
+
+    if (unsafeOperators.hasBacktick) {
+        reasons.push('Backtick command substitution is not allowed');
+        blocked = true;
+        level = 'high';
     }
 
     return buildRiskAssessment(level, reasons, { blocked, requiresApproval });

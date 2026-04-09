@@ -1601,6 +1601,17 @@ export function renderWebChatPage(config: WebConfig): string {
               setToolChip('');
               finalizeReply(payload.sourceMessageId, '请求处理失败：' + (payload.message || '未知错误'), [], payload.process || null);
               break;
+            case 'reply_cancelled':
+              setToolChip('');
+              finalizeReply(payload.sourceMessageId, (payload.text ? payload.text + '\n\n' : '') + '当前会话已中断。', [], payload.process || null);
+              break;
+            case 'cancel_ack':
+              if (payload.status === 'not_found' || payload.status === 'error' || payload.status === 'unsupported') {
+                appendSystem('中断请求失败：' + (payload.reason || payload.status || '未知错误'));
+              }
+              break;
+            case 'session_state':
+              break;
             case 'reply':
               finalizeReply(payload.messageId || randomId('reply'), payload.text || '', payload.attachments || []);
               break;
