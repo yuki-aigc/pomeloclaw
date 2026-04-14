@@ -12,13 +12,14 @@ const mcpOutputHandlingSchema = z.union([
     }).partial(),
 ]);
 
-const mcpServerBaseSchema = z.object({
+export const mcpServerBaseSchema = z.object({
+    enabled: z.boolean().optional(),
     env: z.record(z.string(), z.string()).optional(),
     defaultToolTimeout: z.number().int().nonnegative().optional(),
     outputHandling: mcpOutputHandlingSchema.optional(),
 });
 
-const mcpServerStdioSchema = mcpServerBaseSchema.extend({
+export const mcpServerStdioSchema = mcpServerBaseSchema.extend({
     transport: z.literal('stdio'),
     command: z.string(),
     args: z.array(z.string()).optional(),
@@ -31,7 +32,7 @@ const mcpServerStdioSchema = mcpServerBaseSchema.extend({
     }).optional(),
 });
 
-const mcpServerHttpSchema = mcpServerBaseSchema.extend({
+export const mcpServerHttpSchema = mcpServerBaseSchema.extend({
     transport: z.enum(['http', 'sse']),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
@@ -43,7 +44,7 @@ const mcpServerHttpSchema = mcpServerBaseSchema.extend({
     automaticSSEFallback: z.boolean().optional(),
 });
 
-const mcpServerSchema = z.union([mcpServerStdioSchema, mcpServerHttpSchema]);
+export const mcpServerSchema = z.union([mcpServerStdioSchema, mcpServerHttpSchema]);
 
 const llmModelSchema = z.object({
     alias: z.string().min(1),

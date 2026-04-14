@@ -372,6 +372,143 @@ Web 渠道当前默认会做三层持久化：
 - 只允许访问 `MEMORY.md` 或 `memory/**/*.md`
 - 禁止 `..`、绝对路径、符号链接/硬链接目标
 
+### 3.7 管理 MCP 运行态
+
+用于查询当前进程里已加载的 MCP server / tools，并对 MCP 做热重载、启停、增删改。
+
+接口：
+
+- `GET /api/web/mcp`
+- `POST /api/web/mcp`
+
+鉴权：
+
+- 若配置了 `web.authToken`，请求需带 `Authorization: Bearer <token>`，或 `x-web-auth-token: <token>`。
+- 若未配置 `web.authToken`，默认放行（建议内网使用）。
+
+`GET /api/web/mcp` 响应示例：
+
+```json
+{
+  "ok": true,
+  "mcp": {
+    "enabled": true,
+    "serverCount": 2,
+    "loadedServerCount": 1,
+    "toolCount": 3,
+    "servers": [
+      {
+        "name": "filesystem",
+        "transport": "stdio",
+        "config": {
+          "enabled": true,
+          "transport": "stdio",
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+        },
+        "enabled": true,
+        "loaded": true,
+        "toolCount": 3,
+        "tools": [
+          {
+            "name": "filesystem_read_file",
+            "rawName": "read_file",
+            "description": "Read a file from the configured root.",
+            "serverName": "filesystem",
+            "inputSchema": {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": { "type": "string", "description": "Absolute path" }
+              }
+            },
+            "parameters": [
+              {
+                "name": "path",
+                "type": "string",
+                "description": "Absolute path",
+                "required": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "weather",
+        "transport": "sse",
+        "enabled": false,
+        "loaded": false,
+        "toolCount": 0,
+        "tools": []
+      }
+    ],
+    "tools": [
+      {
+        "name": "filesystem_read_file",
+        "rawName": "read_file",
+        "description": "Read a file from the configured root.",
+        "serverName": "filesystem",
+        "inputSchema": {
+          "type": "object",
+          "required": ["path"],
+          "properties": {
+            "path": { "type": "string", "description": "Absolute path" }
+          }
+        },
+        "parameters": [
+          {
+            "name": "path",
+            "type": "string",
+            "description": "Absolute path",
+            "required": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`POST /api/web/mcp` 请求示例：
+
+```json
+{ "action": "reload" }
+```
+
+```json
+{ "action": "set-global-enabled", "enabled": false }
+```
+
+```json
+{ "action": "set-server-enabled", "serverName": "filesystem", "enabled": false }
+```
+
+```json
+{
+  "action": "upsert-server",
+  "serverName": "browser",
+  "server": {
+    "enabled": true,
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@demo/browser-mcp"]
+  }
+}
+```
+
+```json
+{ "action": "remove-server", "serverName": "browser" }
+```
+
+说明：
+
+- 所有变更都会触发 agent 热重载，成功后响应里返回最新 MCP 运行态
+- 变更会同步写回项目根目录 `config.json` 的 `mcp` 配置段，服务重启后仍然生效
+- 若热重载失败，会自动回滚到变更前的 MCP 配置
+- `tools` 返回的是当前 agent 实际已挂载的 MCP 工具，而不是仅回显静态配置
+- `servers[].config` 返回当前 server 的完整配置，适合前端编辑弹窗做表单回填
+- `tools[].inputSchema` / `tools[].parameters` 可用于展示 MCP 工具参数说明
+
 ## 4. WebSocket API
 
 ### 4.1 连接地址

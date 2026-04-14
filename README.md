@@ -239,7 +239,7 @@ export OPENAI_MODEL="gpt-4o"
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 ```
 
-敏感配置推荐放在 `~/.srebot/credentials/.env`（可通过 `SREBOT_CREDENTIALS_ENV_PATH` 自定义路径），格式示例：
+敏感配置推荐放在 `~/.srebot/.credentials/.env`（可通过 `SREBOT_CREDENTIALS_ENV_PATH` 自定义路径），格式示例：
 
 ```bash
 OPENAI_API_KEY="sk-xxx"
@@ -250,7 +250,7 @@ MEMORY_PG_PASSWORD="xxx"
 读取优先级：
 
 1. `config.json` 中已配置的值（优先）
-2. 进程环境变量 / `~/.srebot/credentials/.env` 作为兜底
+2. 进程环境变量 / `~/.srebot/.credentials/.env` 作为兜底
 
 说明：
 
@@ -705,12 +705,15 @@ CHANNELS=web pnpm run server
 - **工具状态提示**：收到 `tool_start / tool_end` 时页面会显示当前工具状态
 - **斜杠命令**：支持 `/status`、`/models`、`/model <alias>`、`/skills`、`/skill-install <source>`、`/skill-remove <name>`、`/skill-reload`、`/help`、`/?`
 - **技能热重载**：安装/删除技能后立即重载；手工修改技能目录后会在下一轮请求前自动重载
+- **MCP 运行时管理**：支持查询当前已加载 MCP 工具，并通过 Web API 对单个 MCP server 做启停、增删改；变更会写回 `config.json` 并立即热重载
 - **语音命令提示**：`/voice`、`/voice on`、`/voice off` 会明确提示“Web 渠道暂不支持”
 
 ### 对外 API 要点
 
 - `POST /api/web/sessions`：申请/恢复 `session_id`
 - `POST /api/web/uploads`：上传图片/文件，返回 `upload_id`
+- `GET /api/web/mcp`：查看当前 MCP 运行态、已加载 server 与工具清单
+- `POST /api/web/mcp`：执行 MCP 管理动作（`reload`、`set-global-enabled`、`set-server-enabled`、`upsert-server`、`remove-server`）
 - `WebSocket message.attachments[].upload_id`：把已上传附件挂到本轮消息
 - 详细协议见 `docs/web-api.md`
 

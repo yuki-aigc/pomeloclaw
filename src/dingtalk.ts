@@ -756,6 +756,7 @@ export async function startDingTalkService(options?: {
                 ctx.agent = currentAgent;
             }
         },
+        getMCPState: () => conversationRuntime.getMCPState(),
         skillsDir: skillsPath,
     };
 

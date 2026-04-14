@@ -8,6 +8,7 @@ import type {
 } from '../agent.js';
 import { MemorySaver } from '@langchain/langgraph';
 import type { Config } from '../config.js';
+import type { MCPRuntimeState } from '../mcp.js';
 import {
     getActiveModelAlias,
     getActiveModelName,
@@ -61,6 +62,14 @@ export class ConversationRuntime {
             throw new Error('ConversationRuntime has not been initialized');
         }
         return ctx.agent;
+    }
+
+    getMCPState(): MCPRuntimeState {
+        const ctx = this.agentContext;
+        if (!ctx) {
+            throw new Error('ConversationRuntime has not been initialized');
+        }
+        return ctx.mcpState;
     }
 
     async close(): Promise<void> {

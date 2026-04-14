@@ -198,6 +198,7 @@ function handleHelpCommand(): CommandResult {
 /model <别名> - 切换当前模型
 /status - 显示当前会话状态
 /cron - 列出所有渠道的定时任务详情
+/mcp - 列出当前 MCP 服务器与工具
 /skills - 列出当前已安装技能
 /skill-install <来源> - 远程或本地安装技能
 /skill-remove <名称> - 删除已安装技能

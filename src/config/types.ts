@@ -156,6 +156,7 @@ export type MCPOutputHandling =
     };
 
 export interface MCPServerBaseConfig {
+    enabled?: boolean;
     env?: Record<string, string>;
     defaultToolTimeout?: number;
     outputHandling?: MCPOutputHandling;

@@ -35,6 +35,7 @@ import {
     updateTokenCountWithModel,
 } from './middleware/index.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand } from './skills/index.js';
+import { executeMCPSlashCommand } from './mcp-slash.js';
 
 // ANSI terminal colors
 const colors = {
@@ -427,6 +428,19 @@ async function main() {
             if (skillCommand.handled) {
                 console.log();
                 console.log(`${colors.white}● ${colors.reset}${skillCommand.response || ''}`);
+                console.log();
+                console.log(`${colors.gray}${'━'.repeat(output.columns || 50)}${colors.reset}`);
+                console.log();
+                continue;
+            }
+
+            const mcpCommand = await executeMCPSlashCommand({
+                input: userInput,
+                getMCPState: () => conversationRuntime.getMCPState(),
+            });
+            if (mcpCommand.handled) {
+                console.log();
+                console.log(`${colors.white}● ${colors.reset}${mcpCommand.response || ''}`);
                 console.log();
                 console.log(`${colors.gray}${'━'.repeat(output.columns || 50)}${colors.reset}`);
                 console.log();

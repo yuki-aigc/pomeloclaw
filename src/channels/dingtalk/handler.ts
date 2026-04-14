@@ -65,6 +65,7 @@ import { DingTalkSessionStore, createSessionThreadId } from './session-store.js'
 import { buildPromptBootstrapMessage } from '../../prompt/bootstrap.js';
 import { executeSkillSlashCommand } from '../../skills/index.js';
 import { executeCronSlashCommand } from '../../cron/slash.js';
+import { executeMCPSlashCommand } from '../../mcp-slash.js';
 import {
     enqueueConversationTask,
     prepareConversationUserMessages,
@@ -1145,6 +1146,7 @@ export interface MessageHandlerContext {
     switchModel?: (alias: string) => Promise<{ alias: string; model: string }>;
     reloadAgent?: () => Promise<void>;
     reloadIfNeeded?: () => Promise<void>;
+    getMCPState?: () => import('../../mcp.js').MCPRuntimeState;
     skillsDir?: string;
 }
 
@@ -1234,6 +1236,7 @@ function buildHelpMessage(currentModelAlias: string): string {
         '- `/cron` 查看所有渠道的定时任务详情',
         '- `/models` 查看可用模型列表',
         '- `/model <别名>` 切换模型（例如 `/model qwen`）',
+        '- `/mcp` 查看当前 MCP 服务器与工具',
         '- `/skills` 查看已安装技能',
         '- `/skill-install <来源>` 远程或本地安装技能',
         '- `/skill-remove <名称>` 删除已安装技能',
@@ -1302,6 +1305,23 @@ async function tryHandleSlashCommand(params: {
                 params.ctx.dingtalkConfig,
                 params.sessionWebhook,
                 skillCommand.response || '已处理技能命令。',
+                mention,
+                params.ctx.log
+            );
+            return true;
+        }
+    }
+
+    if (params.ctx.getMCPState) {
+        const mcpCommand = await executeMCPSlashCommand({
+            input: params.text,
+            getMCPState: params.ctx.getMCPState,
+        });
+        if (mcpCommand.handled) {
+            await sendBySession(
+                params.ctx.dingtalkConfig,
+                params.sessionWebhook,
+                mcpCommand.response || '已处理 MCP 命令。',
                 mention,
                 params.ctx.log
             );

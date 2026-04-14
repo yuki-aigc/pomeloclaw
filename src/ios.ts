@@ -21,6 +21,7 @@ import {
 } from './channels/runtime-entry.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand } from './skills/index.js';
 import { executeCronSlashCommand } from './cron/slash.js';
+import { executeMCPSlashCommand } from './mcp-slash.js';
 
 function buildCronDeliveryTarget(job: CronJob, config: ReturnType<typeof loadConfig>): string | undefined {
     const fromJob = job.delivery.target?.trim();
@@ -130,6 +131,19 @@ export async function startIOSService(options?: {
                 return {
                     reply: {
                         text: skillCommand.response || '已处理技能命令。',
+                        useMarkdown: false,
+                    },
+                };
+            }
+
+            const mcpCommand = await executeMCPSlashCommand({
+                input: userText,
+                getMCPState: () => conversationRuntime.getMCPState(),
+            });
+            if (mcpCommand.handled) {
+                return {
+                    reply: {
+                        text: mcpCommand.response || '已处理 MCP 命令。',
                         useMarkdown: false,
                     },
                 };

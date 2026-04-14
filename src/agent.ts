@@ -16,7 +16,7 @@ import { getSubagents } from './subagents/index.js';
 import { runCommand, type ExecAuditMetadata } from './tools/exec.js';
 import { checkCommandPolicy, type CommandRiskLevel, type PolicyStatus } from './tools/exec-policy.js';
 import { writeExecAuditEvent, type ExecAuditEventType } from './audit/logger.js';
-import { initializeMCPTools } from './mcp.js';
+import { buildMCPRuntimeState, initializeMCPTools, type MCPRuntimeState } from './mcp.js';
 import { createChatModel } from './llm.js';
 import { createCronTools } from './cron/tools.js';
 import { createDingTalkFileReturnTools } from './channels/dingtalk/file-return-tools.js';
@@ -59,6 +59,7 @@ export interface RuntimeAgent {
 export interface AgentContext {
     agent: RuntimeAgent;
     config: Config;
+    mcpState: MCPRuntimeState;
     cleanup: () => Promise<void>;
 }
 
@@ -732,7 +733,12 @@ ${mcpServersHint}`;
         await mcpBootstrap.close();
     };
 
-    return { agent, config: cfg, cleanup };
+    return {
+        agent,
+        config: cfg,
+        mcpState: buildMCPRuntimeState(cfg.mcp, mcpBootstrap),
+        cleanup,
+    };
 }
 
 // Export for backward compatibility

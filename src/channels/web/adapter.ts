@@ -41,6 +41,7 @@ import {
     writeMemoryMarkdownFile,
     writeSkillFile,
 } from './workspace-file-store.js';
+import { parseMCPManagementAction, type MCPManager } from '../../mcp-manager.js';
 import type {
     WebAttachmentPayload,
     WebAttachmentRecord,
@@ -62,6 +63,7 @@ export interface WebChannelAdapterOptions {
     log: WebLogger;
     workspaceRoot: string;
     skillsRoot: string;
+    mcpManager?: MCPManager;
     resolveTokenUsage?: (conversationId: string) => WebTokenUsagePayload | null;
     onCancelRequest?: (params: { conversationId: string; requestId?: string; connectionId: string }) => Promise<{
         ok: boolean;
@@ -81,6 +83,7 @@ const SESSION_API_PATH = '/api/web/sessions';
 const UPLOAD_API_PATH = '/api/web/uploads';
 const SKILLS_FILE_API_PATH = '/api/web/files/skills';
 const MEMORY_FILE_API_PATH = '/api/web/files/memory';
+const MCP_API_PATH = '/api/web/mcp';
 
 function parseClientEnvelope(raw: RawData): WebClientEnvelope | null {
     let text = '';
@@ -394,6 +397,7 @@ export class WebChannelAdapter implements ChannelAdapter {
             || url.pathname === UPLOAD_API_PATH
             || url.pathname === SKILLS_FILE_API_PATH
             || url.pathname === MEMORY_FILE_API_PATH
+            || url.pathname === MCP_API_PATH
         )) {
             this.writeApiCorsHeaders(res);
             res.writeHead(204);
@@ -440,6 +444,20 @@ export class WebChannelAdapter implements ChannelAdapter {
             }
             if (method === 'PUT') {
                 await this.handleMemoryFileWriteRequest(req, res);
+                return;
+            }
+        }
+
+        if (url.pathname === MCP_API_PATH) {
+            if (!this.ensureWorkspaceManageApiAuthorized(req, res)) {
+                return;
+            }
+            if (method === 'GET') {
+                await this.handleMCPReadRequest(res);
+                return;
+            }
+            if (method === 'POST') {
+                await this.handleMCPWriteRequest(req, res);
                 return;
             }
         }
@@ -813,6 +831,42 @@ export class WebChannelAdapter implements ChannelAdapter {
                     updatedAtMs: file.updatedAtMs,
                     content: file.content,
                 },
+            });
+        } catch (error) {
+            this.writeApiError(
+                res,
+                400,
+                'bad_request',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
+    private async handleMCPReadRequest(res: ServerResponse): Promise<void> {
+        if (!this.options.mcpManager) {
+            this.writeApiError(res, 501, 'not_implemented', '当前服务未启用 MCP 管理');
+            return;
+        }
+
+        this.writeApiJson(res, 200, {
+            ok: true,
+            mcp: this.options.mcpManager.getState(),
+        });
+    }
+
+    private async handleMCPWriteRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+        if (!this.options.mcpManager) {
+            this.writeApiError(res, 501, 'not_implemented', '当前服务未启用 MCP 管理');
+            return;
+        }
+
+        try {
+            const body = await this.readJsonBody(req, 2 * 1024 * 1024);
+            const action = parseMCPManagementAction(body);
+            const state = await this.options.mcpManager.execute(action);
+            this.writeApiJson(res, 200, {
+                ok: true,
+                mcp: state,
             });
         } catch (error) {
             this.writeApiError(

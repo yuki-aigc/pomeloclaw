@@ -45,6 +45,8 @@ import { WebConversationCancelRegistry } from './channels/web/cancel.js';
 import type { RuntimeLogWriter } from './log/runtime.js';
 import { createSkillDirectoryMonitor, executeSkillSlashCommand, parseSkillSlashCommand } from './skills/index.js';
 import { executeCronSlashCommand } from './cron/slash.js';
+import { executeMCPSlashCommand, parseMCPSlashCommand } from './mcp-slash.js';
+import { MCPManager } from './mcp-manager.js';
 import {
     enqueueConversationTask,
     prepareConversationUserMessages,
@@ -70,6 +72,7 @@ interface WebConversationRuntimeState {
 }
 
 export type WebSlashCommand =
+    | { type: 'new_session' }
     | { type: 'list_models' }
     | { type: 'status' }
     | { type: 'switch_model'; alias: string }
@@ -98,6 +101,15 @@ function createWebThreadId(conversationId: string): string {
     return `web-${conversationId}-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
 }
 
+function resetWebConversationState(state: WebConversationRuntimeState, conversationId: string): void {
+    state.threadId = createWebThreadId(conversationId);
+    state.flushState = createMemoryFlushState();
+    state.totalInputTokens = 0;
+    state.totalOutputTokens = 0;
+    state.lastUpdatedAt = Date.now();
+    state.startupMemoryInjected = false;
+}
+
 export function parseWebSlashCommand(input: string): WebSlashCommand | null {
     const text = input.trim();
     if (!text.startsWith('/')) {
@@ -105,6 +117,12 @@ export function parseWebSlashCommand(input: string): WebSlashCommand | null {
     }
     if (parseSkillSlashCommand(text)) {
         return null;
+    }
+    if (parseMCPSlashCommand(text)) {
+        return null;
+    }
+    if (text === '/new' || text === '/reset') {
+        return { type: 'new_session' };
     }
     if (text === '/models') {
         return { type: 'list_models' };
@@ -158,11 +176,13 @@ function buildWebHelpMessage(currentModelAlias: string): string {
     return [
         '## 命令帮助',
         '',
+        '- `/new` 或 `/reset` 开始新会话（重置当前 Web 会话上下文）',
         '- `/status` 查看当前会话状态',
         '- `/cron` 查看所有渠道的定时任务详情',
         '- `/models` 查看可用模型列表',
         '- `/model <别名>` 切换模型（例如 `/model qwen`）',
         '- `/skills` 查看已安装技能',
+        '- `/mcp` 查看当前 MCP 服务器与工具',
         '- `/skill-install <来源>` 远程或本地安装技能',
         '- `/skill-remove <名称>` 删除已安装技能',
         '- `/skill-reload` 重新加载技能索引',
@@ -248,9 +268,20 @@ async function tryHandleWebSlashCommand(params: {
     text: string;
     config: ReturnType<typeof loadConfig>;
     state: WebConversationRuntimeState;
+    conversationId: string;
+    currentAgent: RuntimeAgent;
+    log: WebLogger;
     conversationRuntime: ConversationRuntime;
     onModelChanged: () => void;
 }): Promise<string | null> {
+    const mcpCommand = await executeMCPSlashCommand({
+        input: params.text,
+        getMCPState: () => params.conversationRuntime.getMCPState(),
+    });
+    if (mcpCommand.handled) {
+        return mcpCommand.response || '已处理 MCP 命令。';
+    }
+
     const cronCommand = await executeCronSlashCommand(params.text);
     if (cronCommand.handled) {
         return cronCommand.response || '已处理定时任务命令。';
@@ -259,6 +290,21 @@ async function tryHandleWebSlashCommand(params: {
     const parsed = parseWebSlashCommand(params.text);
     if (!parsed) {
         return null;
+    }
+
+    if (parsed.type === 'new_session') {
+        if (params.state.flushState.totalTokens > 0) {
+            await executeWebMemoryFlush({
+                agent: params.currentAgent,
+                config: params.config,
+                conversationId: params.conversationId,
+                state: params.state,
+                scope: params.state.scope,
+                log: params.log,
+            });
+        }
+        resetWebConversationState(params.state, params.conversationId);
+        return `🆕 已开始新会话。\n当前会话：\`${params.state.threadId}\``;
     }
 
     if (parsed.type === 'status') {
@@ -530,6 +576,14 @@ export async function startWebService(options?: {
     await conversationRuntime.initialize();
 
     let currentAgent = conversationRuntime.getAgent();
+    const mcpManager = new MCPManager({
+        config,
+        getRuntimeState: () => conversationRuntime.getMCPState(),
+        reloadAgent: async () => {
+            await conversationRuntime.reloadAgent();
+            currentAgent = conversationRuntime.getAgent();
+        },
+    });
     let gateway: GatewayService | null = null;
     let webAdapter: WebChannelAdapter | null = null;
     let isShuttingDown = false;
@@ -574,6 +628,9 @@ export async function startWebService(options?: {
                     text: message.text,
                     config,
                     state: conversationState,
+                    conversationId: message.conversationId,
+                    currentAgent,
+                    log,
                     conversationRuntime,
                     onModelChanged: () => {
                         currentAgent = conversationRuntime.getAgent();
@@ -980,6 +1037,7 @@ export async function startWebService(options?: {
         log,
         workspaceRoot: memoryWorkspacePath,
         skillsRoot: skillsPath,
+        mcpManager,
         resolveTokenUsage: (conversationId: string) =>
             resolveWebTokenUsage(conversationStates, conversationId, config),
         onCancelRequest: async ({ conversationId, requestId }) =>
