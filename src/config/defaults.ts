@@ -110,6 +110,8 @@ export const DEFAULT_CONFIG: Config = {
         },
         allowedCommands: [...DEFAULT_COMMANDS.allowedCommands],
         deniedCommands: [...DEFAULT_COMMANDS.deniedCommands],
+        allowShellOperators: false,
+        shellAllowedCommands: [],
     },
     mcp: {
         enabled: false,

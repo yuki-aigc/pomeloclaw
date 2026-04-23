@@ -13,7 +13,7 @@ export interface ExecAuditMetadata {
     args: string[];
     cwd: string;
     timeoutMs: number;
-    shell: false;
+    shell: boolean;
     policyMode: 'enforce' | 'deny-only';
     policyStatus: 'allowed' | 'denied' | 'unknown' | 'disabled';
     riskLevel: 'low' | 'medium' | 'high' | 'critical';
@@ -150,6 +150,54 @@ function describeAbortReason(signal: AbortSignal | undefined): string {
     return 'Command aborted by request cancellation';
 }
 
+function commandUsesShellSyntax(command: string): boolean {
+    let quote: '"' | "'" | null = null;
+    let escaping = false;
+
+    for (let i = 0; i < command.length; i += 1) {
+        const ch = command[i];
+
+        if (escaping) {
+            escaping = false;
+            continue;
+        }
+
+        if (quote === "'") {
+            if (ch === "'") {
+                quote = null;
+            }
+            continue;
+        }
+
+        if (quote === '"') {
+            if (ch === '"') {
+                quote = null;
+                continue;
+            }
+            if (ch === '\\') {
+                escaping = true;
+            }
+            continue;
+        }
+
+        if (ch === '\\') {
+            escaping = true;
+            continue;
+        }
+
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            continue;
+        }
+
+        if (ch === '>' || ch === '<' || ch === '|') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
  * Execute a command with timeout and output capture
  */
@@ -167,6 +215,11 @@ export async function runCommand(
     const parsed = parseCommandInput(commandStr);
     const policyMode = options.policyMode ?? 'enforce';
     const policyCheck = checkCommandPolicy(commandStr, config);
+    const shellEnabledForCommand = Boolean(
+        policyCheck.baseCommand
+        && (config.allowShellOperators || config.shellAllowedCommands.includes(policyCheck.baseCommand))
+        && commandUsesShellSyntax(commandStr)
+    );
 
     const timeoutMs = options.timeoutMs ?? config.defaultTimeoutMs;
     const maxOutputLength = Math.max(1, options.maxOutputLength ?? config.maxOutputLength);
@@ -193,7 +246,7 @@ export async function runCommand(
             args: safeParsed.args,
             cwd: finalCwd,
             timeoutMs,
-            shell: false,
+            shell: shellEnabledForCommand,
             policyMode,
             policyStatus: policyCheck.status,
             riskLevel: policyCheck.risk.level,
@@ -274,11 +327,17 @@ export async function runCommand(
         let abortError: string | undefined;
         let forceKillTimer: NodeJS.Timeout | null = null;
 
-        const child = spawn(command, args, {
-            cwd: finalCwd,
-            env: runtimeEnv,
-            shell: false,
-        });
+        const child = shellEnabledForCommand
+            ? spawn(commandStr, {
+                cwd: finalCwd,
+                env: runtimeEnv,
+                shell: true,
+            })
+            : spawn(command, args, {
+                cwd: finalCwd,
+                env: runtimeEnv,
+                shell: false,
+            });
         const childPid = child.pid ?? null;
 
         const timer = setTimeout(() => {

@@ -74,6 +74,9 @@ export interface WebMessagePayload {
     nickName?: string;
     senderName?: string;
     text?: string;
+    skills?: string[];
+    skill_names?: string[];
+    skillNames?: string[];
     attachments?: WebInboundAttachmentPayload[];
     metadata?: Record<string, unknown>;
 }

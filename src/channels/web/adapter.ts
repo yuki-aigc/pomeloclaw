@@ -41,7 +41,9 @@ import {
     writeMemoryMarkdownFile,
     writeSkillFile,
 } from './workspace-file-store.js';
+import { listInstalledSkills } from '../../skills/manager.js';
 import { parseMCPManagementAction, type MCPManager } from '../../mcp-manager.js';
+import { collectRequestedWebSkills, resolveRequestedWebSkills } from './skill-selection.js';
 import type {
     WebAttachmentPayload,
     WebAttachmentRecord,
@@ -81,6 +83,7 @@ export interface WebStreamRequest {
 const ATTACHMENT_TTL_MS = 6 * 60 * 60 * 1000;
 const SESSION_API_PATH = '/api/web/sessions';
 const UPLOAD_API_PATH = '/api/web/uploads';
+const SKILLS_API_PATH = '/api/web/skills';
 const SKILLS_FILE_API_PATH = '/api/web/files/skills';
 const MEMORY_FILE_API_PATH = '/api/web/files/memory';
 const MCP_API_PATH = '/api/web/mcp';
@@ -395,6 +398,7 @@ export class WebChannelAdapter implements ChannelAdapter {
         if (method === 'OPTIONS' && (
             url.pathname === SESSION_API_PATH
             || url.pathname === UPLOAD_API_PATH
+            || url.pathname === SKILLS_API_PATH
             || url.pathname === SKILLS_FILE_API_PATH
             || url.pathname === MEMORY_FILE_API_PATH
             || url.pathname === MCP_API_PATH
@@ -417,6 +421,14 @@ export class WebChannelAdapter implements ChannelAdapter {
 
         if (method === 'POST' && url.pathname === UPLOAD_API_PATH) {
             await this.handleUploadRequest(req, res);
+            return;
+        }
+
+        if (method === 'GET' && url.pathname === SKILLS_API_PATH) {
+            if (!this.ensureWorkspaceManageApiAuthorized(req, res)) {
+                return;
+            }
+            await this.handleSkillsReadRequest(res);
             return;
         }
 
@@ -723,6 +735,29 @@ export class WebChannelAdapter implements ChannelAdapter {
                 res,
                 400,
                 'bad_request',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
+    private async handleSkillsReadRequest(res: ServerResponse): Promise<void> {
+        try {
+            const skills = await listInstalledSkills(this.options.skillsRoot);
+            this.writeApiJson(res, 200, {
+                ok: true,
+                skills: skills.map((item) => ({
+                    name: item.name,
+                    description: item.description,
+                    dirName: item.dirName,
+                    path: item.absPath,
+                    updatedAtMs: item.updatedAtMs,
+                })),
+            });
+        } catch (error) {
+            this.writeApiError(
+                res,
+                500,
+                'internal_error',
                 error instanceof Error ? error.message : String(error),
             );
         }
@@ -1260,6 +1295,7 @@ export class WebChannelAdapter implements ChannelAdapter {
         }
 
         const text = payload.text?.trim() || '';
+        const requestedSkills = collectRequestedWebSkills(payload);
         const hasAttachments = Array.isArray(payload.attachments) && payload.attachments.length > 0;
         if (!text && !hasAttachments) {
             this.sendToConnection(state, {
@@ -1300,6 +1336,28 @@ export class WebChannelAdapter implements ChannelAdapter {
         state.userName = identity.nickName;
         state.isDirect = identity.isDirect;
         this.reindexConnection(state, previousConversation, previousUser);
+
+        let selectedSkills: string[] = [];
+        if (requestedSkills.length > 0) {
+            const availableSkills = await listInstalledSkills(this.options.skillsRoot);
+            const resolvedSkills = resolveRequestedWebSkills(requestedSkills, availableSkills);
+            if (resolvedSkills.unknown.length > 0) {
+                this.sendToConnection(state, this.withTokenUsage({
+                    type: 'dispatch_ack',
+                    messageId: identity.messageId,
+                    message_id: identity.messageId,
+                    request_id: identity.messageId,
+                    status: 'error',
+                    reason: `未找到以下技能: ${resolvedSkills.unknown.join(', ')}`,
+                    session_id: state.conversationId,
+                    sessionId: state.conversationId,
+                    timestamp: Date.now(),
+                }, state.conversationId));
+                return;
+            }
+            selectedSkills = resolvedSkills.selected;
+        }
+
         let inboundAttachments: ChannelAttachment[] = [];
         try {
             inboundAttachments = this.resolveInboundAttachments(payload.attachments, {
@@ -1341,6 +1399,7 @@ export class WebChannelAdapter implements ChannelAdapter {
                 webUserId: state.userId,
                 webSessionId: state.conversationId,
                 webAttachmentCount: inboundAttachments.length,
+                webSelectedSkills: selectedSkills,
                 webUserAgent: state.request.headers['user-agent'] || '',
                 webOrigin: state.request.headers.origin || '',
                 ...(payload.metadata || {}),

@@ -51,12 +51,14 @@ function buildRiskAssessment(
 function collectUnsafeShellOperators(command: string): {
     hasSemicolon: boolean;
     hasRedirection: boolean;
+    hasPipe: boolean;
     hasBacktick: boolean;
 } {
     let quote: '"' | "'" | null = null;
     let escaping = false;
     let hasSemicolon = false;
     let hasRedirection = false;
+    let hasPipe = false;
     let hasBacktick = false;
 
     for (let i = 0; i < command.length; i += 1) {
@@ -105,12 +107,17 @@ function collectUnsafeShellOperators(command: string): {
             continue;
         }
 
+        if (ch === '|') {
+            hasPipe = true;
+            continue;
+        }
+
         if (ch === '`') {
             hasBacktick = true;
         }
     }
 
-    return { hasSemicolon, hasRedirection, hasBacktick };
+    return { hasSemicolon, hasRedirection, hasPipe, hasBacktick };
 }
 
 /**
@@ -147,12 +154,6 @@ export function assessCommandRisk(command: string): CommandRiskAssessment {
 
     if (unsafeOperators.hasSemicolon) {
         reasons.push('Semicolon chaining is not allowed');
-        blocked = true;
-        level = 'high';
-    }
-
-    if (unsafeOperators.hasRedirection) {
-        reasons.push('Redirection operators are not allowed');
         blocked = true;
         level = 'high';
     }
@@ -214,6 +215,19 @@ export function checkCommandPolicy(command: string, config: ExecConfig): PolicyC
             baseCommand: null,
             reason: 'Empty or invalid command',
             risk,
+            parsedTokens: parsed.parsed.tokens,
+            requiresApproval: false,
+        };
+    }
+
+    const unsafeOperators = collectUnsafeShellOperators(command);
+    const shellAllowed = config.allowShellOperators || config.shellAllowedCommands.includes(baseCommand);
+    if (unsafeOperators.hasRedirection && !shellAllowed) {
+        return {
+            status: 'denied',
+            baseCommand,
+            reason: 'Blocked by command safety policy: Redirection operators are not allowed for this command',
+            risk: buildRiskAssessment('high', ['Redirection operators are not allowed'], { blocked: true }),
             parsedTokens: parsed.parsed.tokens,
             requiresApproval: false,
         };

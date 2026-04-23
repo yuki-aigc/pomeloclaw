@@ -130,6 +130,8 @@ export interface ExecConfigFile {
     commandsFile?: string;
     allowedCommands?: string[];
     deniedCommands?: string[];
+    allowShellOperators?: boolean;
+    shellAllowedCommands?: string[];
     defaultTimeoutMs: number;
     maxOutputLength: number;
     approvals?: Partial<ExecApprovalsConfig>;
@@ -139,6 +141,8 @@ export interface ExecConfig {
     enabled: boolean;
     allowedCommands: string[];
     deniedCommands: string[];
+    allowShellOperators: boolean;
+    shellAllowedCommands: string[];
     defaultTimeoutMs: number;
     maxOutputLength: number;
     approvals: ExecApprovalsConfig;

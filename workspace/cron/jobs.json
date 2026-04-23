@@ -24,7 +24,7 @@
         "title": "SREBot 定时任务"
       },
       "state": {
-        "nextRunAtMs": 1776283200000,
+        "nextRunAtMs": 1777060800000,
         "lastRunAtMs": 1773633041893,
         "lastStatus": "ok",
         "lastDurationMs": 46270
@@ -36,7 +36,7 @@
       "description": "每天早上 8 点自动查询 OpenClaw 项目相关新闻和动态",
       "enabled": true,
       "createdAtMs": 1773114296260,
-      "updatedAtMs": 1773632881485,
+      "updatedAtMs": 1776384010013,
       "schedule": {
         "kind": "cron",
         "expr": "0 8 * * *",
@@ -50,10 +50,11 @@
         "target": "cidiEyrF5XkYWeE9XY4IyDrMg=="
       },
       "state": {
-        "nextRunAtMs": 1776211200000,
-        "lastRunAtMs": 1773632881485,
-        "lastStatus": "ok",
-        "lastDurationMs": 23985
+        "nextRunAtMs": 1776902400000,
+        "lastRunAtMs": 1776384010013,
+        "lastStatus": "error",
+        "lastDurationMs": 10006,
+        "lastError": "Connection error."
       }
     }
   ]

@@ -239,7 +239,58 @@ JSON 示例：
 - 上传成功后，需要在 WebSocket `message.attachments[].upload_id` 中引用
 - 内置 Web UI 发送附件时，走的也是这套接口
 
-### 3.4 记忆持久化行为
+### 3.4 获取已安装技能列表
+
+用于给外部前端渲染 skill 选择器，例如输入框里输入 `@` 后弹出候选列表。
+
+接口：
+
+- `GET /api/web/skills`
+
+鉴权：
+
+- 若配置了 `web.authToken`，请求需带 `Authorization: Bearer <token>`，或 `x-web-auth-token: <token>`。
+- 若未配置 `web.authToken`，默认放行（建议内网使用）。
+
+响应示例：
+
+```json
+{
+  "ok": true,
+  "skills": [
+    {
+      "name": "audit",
+      "description": "Perform comprehensive audit of interface quality across accessibility, performance, theming, and responsive design.",
+      "dirName": "audit",
+      "path": "/abs/path/workspace/skills/audit",
+      "updatedAtMs": 1772580000000
+    },
+    {
+      "name": "skill-creator",
+      "description": "Create or update AgentSkills.",
+      "dirName": "custom-skill-dir",
+      "path": "/abs/path/workspace/skills/custom-skill-dir",
+      "updatedAtMs": 1772580001000
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `name`：skill 的规范名称，推荐前端展示和发送时都使用它
+- `description`：skill 简介，适合展示在候选列表副标题
+- `dirName`：技能目录名；用于兼容历史目录命名与 `name` 不一致的情况
+- `path`：技能根目录绝对路径，主要用于管理台或调试用途
+- `updatedAtMs`：`SKILL.md` 的最近更新时间
+
+建议：
+
+- 前端弹层展示可使用 `name + description`
+- 选中后，建议在输入框中插入 `@<name>` 作为可见提示，同时在发消息时把规范名称写入 `message.skills`
+- 不建议只依赖正文里的 `@skill` 文本做解析；结构化字段更稳
+
+### 3.5 记忆持久化行为
 
 Web 渠道当前默认会做三层持久化：
 
@@ -257,7 +308,7 @@ Web 渠道当前默认会做三层持久化：
 - 关键信息会通过 `memory_save` 进入长期检索链路
 - 多用户 Web API 现在默认共享 `main` scope，适合团队共享记忆
 
-### 3.5 附件下载
+### 3.6 附件下载
 
 服务端会在回复事件里返回附件列表：
 
@@ -281,7 +332,7 @@ Web 渠道当前默认会做三层持久化：
 - 下载 URL 由服务端签发
 - 文件注册有 TTL，不保证永久有效
 
-### 3.6 管理 SKILL 与记忆 Markdown
+### 3.7 管理 SKILL 与记忆 Markdown
 
 用于前端管理技能目录内文件（含 `SKILL.md`、其他 `.md`、脚本等）以及 `MEMORY.md / memory/*.md`。
 
@@ -372,7 +423,7 @@ Web 渠道当前默认会做三层持久化：
 - 只允许访问 `MEMORY.md` 或 `memory/**/*.md`
 - 禁止 `..`、绝对路径、符号链接/硬链接目标
 
-### 3.7 管理 MCP 运行态
+### 3.8 管理 MCP 运行态
 
 用于查询当前进程里已加载的 MCP server / tools，并对 MCP 做热重载、启停、增删改。
 
@@ -627,7 +678,8 @@ Web 渠道现在会在多个响应和事件中附带统一的 token 占用快照
   "nick_name": "Hunter",
   "session_id": "wsn_5c9d7f1e9d4b4f73a49a5f1e4305a4ae",
   "session_title": "工单排障",
-  "text": "帮我总结今天的异常处理",
+  "text": "@audit 帮我总结今天的异常处理",
+  "skills": ["audit"],
   "attachments": [
     {
       "upload_id": "upl_123"
@@ -646,6 +698,15 @@ Web 渠道现在会在多个响应和事件中附带统一的 token 占用快照
 - 如果连接已通过 `hello` 绑定过 `session_id`，`message.session_id` 可省略
 - 如果只发图片/文件，`text` 可以为空，但 `attachments` 不能为空
 - `attachments` 当前只接受上传接口返回的 `upload_id`
+- `skills` / `skill_names` / `skillNames` 都可用，推荐统一使用 `skills`
+- `skills` 应传 `/api/web/skills` 返回的规范 skill 名称数组；如果有未知 skill，服务端会直接返回 `dispatch_ack.status=error`
+
+关于 skill 指定：
+
+- `message.skills` 用于显式告诉后端“本轮优先使用哪些 skills”
+- 当前服务端会先校验 skill 是否存在，再把已选 skills 注入到本轮请求上下文
+- 正文里的 `@audit` 主要用于前端交互提示，不建议把它当成唯一可信信号
+- 推荐做法是“输入框显示 `@skill` + 消息体额外发送 `skills` 数组”
 
 #### `ping`
 
@@ -1098,6 +1159,22 @@ Web 渠道现在会在多个响应和事件中附带统一的 token 占用快照
 2. 如果走 HTTP 建会话，优先读取 `/api/web/sessions` 返回里的 `token_usage`
 3. 收到 `reply_start` 时，先用该事件里的 `token_usage` 更新
 4. 收到 `reply_final` 时，再用 `reply_final.token_usage` 覆盖
+
+### Skill 选择器接入建议
+
+如果你的前端要实现类似 Codex 的 `@skill` 体验，推荐顺序：
+
+1. 页面初始化时调用 `GET /api/web/skills`
+2. 用户在输入框输入 `@` 后，用 `name + description` 渲染候选列表
+3. 用户选中后，在输入框插入 `@<skill-name>` 作为可见提示
+4. 发送消息时，除了 `text`，再显式带上 `skills: ["<skill-name>"]`
+5. 如果允许多选，可继续追加多个 `@skill`，同时把 `skills` 组装成数组
+
+这样做的好处：
+
+- UI 上用户能清楚看到自己选了哪个 skill
+- 协议上后端拿到的是结构化字段，不需要只靠正文解析
+- 后端可以在执行前做 skill 存在性校验，并在不存在时尽早返回错误
 5. 收到 `session_state(reason=memory_flush)` 时，再次刷新，确保压缩后的数字正确
 
 最稳妥的前端策略是：

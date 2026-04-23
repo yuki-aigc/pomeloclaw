@@ -7,6 +7,8 @@ const execConfig: ExecConfig = {
     enabled: true,
     allowedCommands: ['node'],
     deniedCommands: [],
+    allowShellOperators: false,
+    shellAllowedCommands: [],
     defaultTimeoutMs: 10_000,
     maxOutputLength: 8_000,
     approvals: {

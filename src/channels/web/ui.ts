@@ -15,6 +15,7 @@ export function renderWebChatPage(config: WebConfig): string {
         uiPath: config.uiPath,
         sessionApiPath: '/api/web/sessions',
         uploadApiPath: '/api/web/uploads',
+        skillsApiPath: '/api/web/skills',
         authRequired: Boolean(config.authToken?.trim()),
     });
 
@@ -556,6 +557,80 @@ export function renderWebChatPage(config: WebConfig): string {
       font-size: 15px;
       line-height: 1.6;
     }
+    .composer-selected-skills {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .composer-selected-skills.hidden {
+      display: none;
+    }
+    .skill-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 999px;
+      background: rgba(13, 125, 116, 0.1);
+      border: 1px solid rgba(13, 125, 116, 0.14);
+      color: var(--accent-2);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .skill-tag small {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .composer-mention {
+      position: relative;
+    }
+    .mention-menu {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 10px);
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+      border-radius: 18px;
+      border: 1px solid rgba(23, 49, 58, 0.1);
+      background: rgba(255, 251, 246, 0.98);
+      box-shadow: 0 18px 38px rgba(25, 52, 56, 0.12);
+      max-height: 260px;
+      overflow: auto;
+      z-index: 5;
+    }
+    .mention-menu.hidden {
+      display: none;
+    }
+    .mention-item {
+      appearance: none;
+      width: 100%;
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--ink);
+      border-radius: 14px;
+      padding: 10px 12px;
+      display: grid;
+      gap: 3px;
+      text-align: left;
+    }
+    .mention-item:hover,
+    .mention-item[data-active="true"] {
+      border-color: rgba(13, 125, 116, 0.22);
+      background: rgba(13, 125, 116, 0.08);
+    }
+    .mention-item strong {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .mention-item span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
     .composer-toolbar {
       display: flex;
       align-items: center;
@@ -737,7 +812,11 @@ export function renderWebChatPage(config: WebConfig): string {
       </section>
 
       <form class="composer" id="composer">
-        <textarea id="prompt-input" placeholder="例如：回顾一下今天的告警处理，并告诉我未完成项。"></textarea>
+        <div class="composer-selected-skills hidden" id="selected-skills"></div>
+        <div class="composer-mention">
+          <div class="mention-menu hidden" id="skill-mention-menu"></div>
+          <textarea id="prompt-input" placeholder="输入 @ 选择 skill，例如：@audit 帮我检查当前页面的可访问性问题。"></textarea>
+        </div>
         <div class="composer-toolbar">
           <div class="composer-upload">
             <input id="attachment-input" type="file" multiple class="hidden" />
@@ -771,6 +850,8 @@ export function renderWebChatPage(config: WebConfig): string {
         toolChip: document.getElementById('tool-chip'),
         messages: document.getElementById('messages'),
         emptyState: document.getElementById('empty-state'),
+        selectedSkills: document.getElementById('selected-skills'),
+        skillMentionMenu: document.getElementById('skill-mention-menu'),
         promptInput: document.getElementById('prompt-input'),
         attachmentInput: document.getElementById('attachment-input'),
         attachmentButton: document.getElementById('attachment-button'),
@@ -795,7 +876,11 @@ export function renderWebChatPage(config: WebConfig): string {
         connectionId: '',
         pendingReplies: new Map(),
         toolLabel: '',
-        pendingUploads: []
+        pendingUploads: [],
+        availableSkills: [],
+        mentionMatches: [],
+        mentionQuery: null,
+        activeMentionIndex: 0
       };
 
       function randomId(prefix) {
@@ -821,6 +906,36 @@ export function renderWebChatPage(config: WebConfig): string {
         return protocol + '//' + location.host + boot.wsPath;
       }
 
+      function buildAuthHeaders() {
+        const headers = {};
+        const token = boot.authRequired ? (els.authToken.value || '').trim() : '';
+        if (token) {
+          headers.Authorization = 'Bearer ' + token;
+        }
+        return headers;
+      }
+
+      async function loadAvailableSkills() {
+        try {
+          const response = await fetch(boot.skillsApiPath, {
+            headers: buildAuthHeaders(),
+            cache: 'no-store'
+          });
+          if (!response.ok) {
+            if (response.status !== 401) {
+              appendSystem('加载 skills 失败：HTTP ' + response.status);
+            }
+            return;
+          }
+          const payload = await response.json();
+          state.availableSkills = Array.isArray(payload && payload.skills) ? payload.skills : [];
+          syncSelectedSkillTags();
+          refreshMentionMenu();
+        } catch (error) {
+          appendSystem('加载 skills 失败：' + (error && error.message ? error.message : String(error)));
+        }
+      }
+
       function setStatus(stateName, message) {
         els.statusDot.dataset.state = stateName;
         els.statusText.textContent = message;
@@ -834,6 +949,154 @@ export function renderWebChatPage(config: WebConfig): string {
         if (els.emptyState) {
           els.emptyState.remove();
         }
+      }
+
+      function getSkillAliases(skill) {
+        const aliases = [];
+        if (skill && typeof skill.name === 'string' && skill.name.trim()) {
+          aliases.push(skill.name.trim().toLowerCase());
+        }
+        if (skill && typeof skill.dirName === 'string' && skill.dirName.trim()) {
+          aliases.push(skill.dirName.trim().toLowerCase());
+        }
+        return Array.from(new Set(aliases));
+      }
+
+      function findSkillByAlias(alias) {
+        const target = String(alias || '').trim().toLowerCase();
+        if (!target) {
+          return null;
+        }
+        return state.availableSkills.find((skill) => getSkillAliases(skill).includes(target)) || null;
+      }
+
+      function extractSelectedSkillsFromText(text) {
+        const found = [];
+        const seen = new Set();
+        const pattern = /(^|\s)@([a-z0-9][a-z0-9_-]*)/gi;
+        let match;
+        while ((match = pattern.exec(text || ''))) {
+          const skill = findSkillByAlias(match[2]);
+          if (!skill || seen.has(skill.name)) {
+            continue;
+          }
+          seen.add(skill.name);
+          found.push(skill);
+        }
+        return found;
+      }
+
+      function syncSelectedSkillTags() {
+        const selected = extractSelectedSkillsFromText(els.promptInput.value || '');
+        els.selectedSkills.innerHTML = '';
+        if (!selected.length) {
+          els.selectedSkills.classList.add('hidden');
+          return;
+        }
+        selected.forEach((skill) => {
+          const tag = document.createElement('div');
+          tag.className = 'skill-tag';
+          tag.innerHTML = '<span>@' + escapeHtml(skill.name) + '</span><small>' + escapeHtml(skill.description || '') + '</small>';
+          els.selectedSkills.appendChild(tag);
+        });
+        els.selectedSkills.classList.remove('hidden');
+      }
+
+      function getSkillMentionContext() {
+        const value = els.promptInput.value || '';
+        const cursor = typeof els.promptInput.selectionStart === 'number'
+          ? els.promptInput.selectionStart
+          : value.length;
+        const beforeCursor = value.slice(0, cursor);
+        const match = beforeCursor.match(/(?:^|\s)@([a-z0-9_-]*)$/i);
+        if (!match) {
+          return null;
+        }
+        return {
+          query: (match[1] || '').toLowerCase(),
+          replaceFrom: cursor - (match[1] || '').length - 1,
+          replaceTo: cursor
+        };
+      }
+
+      function getMentionMatches(query) {
+        const normalized = String(query || '').trim().toLowerCase();
+        const ranked = state.availableSkills.filter((skill) => {
+          const haystacks = [
+            String(skill.name || '').toLowerCase(),
+            String(skill.dirName || '').toLowerCase(),
+            String(skill.description || '').toLowerCase()
+          ];
+          if (!normalized) {
+            return true;
+          }
+          return haystacks.some((item) => item.includes(normalized));
+        });
+        ranked.sort((a, b) => {
+          const aStarts = String(a.name || '').toLowerCase().startsWith(normalized) ? 1 : 0;
+          const bStarts = String(b.name || '').toLowerCase().startsWith(normalized) ? 1 : 0;
+          if (aStarts !== bStarts) {
+            return bStarts - aStarts;
+          }
+          return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+        return ranked.slice(0, 8);
+      }
+
+      function closeMentionMenu() {
+        state.mentionMatches = [];
+        state.mentionQuery = null;
+        state.activeMentionIndex = 0;
+        els.skillMentionMenu.innerHTML = '';
+        els.skillMentionMenu.classList.add('hidden');
+      }
+
+      function applySelectedSkill(skill) {
+        const context = getSkillMentionContext();
+        if (!context) {
+          return;
+        }
+        const currentValue = els.promptInput.value || '';
+        const insertion = '@' + skill.name + ' ';
+        els.promptInput.value = currentValue.slice(0, context.replaceFrom) + insertion + currentValue.slice(context.replaceTo);
+        const nextCursor = context.replaceFrom + insertion.length;
+        els.promptInput.focus();
+        els.promptInput.setSelectionRange(nextCursor, nextCursor);
+        syncSelectedSkillTags();
+        closeMentionMenu();
+      }
+
+      function refreshMentionMenu() {
+        const context = getSkillMentionContext();
+        if (!context || !state.availableSkills.length) {
+          closeMentionMenu();
+          return;
+        }
+
+        const matches = getMentionMatches(context.query);
+        if (!matches.length) {
+          closeMentionMenu();
+          return;
+        }
+
+        state.mentionMatches = matches;
+        state.mentionQuery = context.query;
+        state.activeMentionIndex = Math.min(state.activeMentionIndex, matches.length - 1);
+        els.skillMentionMenu.innerHTML = '';
+        matches.forEach((skill, index) => {
+          const item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'mention-item';
+          item.dataset.index = String(index);
+          item.dataset.active = index === state.activeMentionIndex ? 'true' : 'false';
+          item.innerHTML = '<strong>@' + escapeHtml(skill.name || '') + '</strong><span>' + escapeHtml(skill.description || '') + '</span>';
+          item.addEventListener('mousedown', (event) => {
+            event.preventDefault();
+            applySelectedSkill(skill);
+          });
+          els.skillMentionMenu.appendChild(item);
+        });
+        els.skillMentionMenu.classList.remove('hidden');
       }
 
       function escapeHtml(value) {
@@ -1649,6 +1912,9 @@ export function renderWebChatPage(config: WebConfig): string {
 
         const sourceMessageId = randomId('msg');
         const conversationId = els.conversationId.value.trim() || undefined;
+        const selectedSkills = extractSelectedSkillsFromText(text).map(function(skill) {
+          return skill.name;
+        });
         saveFields();
 
         state.isBusy = true;
@@ -1681,6 +1947,7 @@ export function renderWebChatPage(config: WebConfig): string {
             user_id: els.userId.value.trim() || 'web-user',
             nick_name: els.userName.value.trim() || 'Web User',
             text,
+            skills: selectedSkills,
             attachments: uploads.map(function(item) {
               return { upload_id: item.upload_id };
             })
@@ -1716,10 +1983,47 @@ export function renderWebChatPage(config: WebConfig): string {
       });
 
       els.promptInput.addEventListener('keydown', (event) => {
+        if (!els.skillMentionMenu.classList.contains('hidden') && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+          event.preventDefault();
+          if (!state.mentionMatches.length) {
+            return;
+          }
+          const delta = event.key === 'ArrowDown' ? 1 : -1;
+          state.activeMentionIndex = (state.activeMentionIndex + delta + state.mentionMatches.length) % state.mentionMatches.length;
+          refreshMentionMenu();
+          return;
+        }
+        if (!els.skillMentionMenu.classList.contains('hidden') && event.key === 'Enter' && !event.shiftKey) {
+          const activeSkill = state.mentionMatches[state.activeMentionIndex];
+          if (activeSkill) {
+            event.preventDefault();
+            applySelectedSkill(activeSkill);
+            return;
+          }
+        }
+        if (event.key === 'Escape') {
+          closeMentionMenu();
+          return;
+        }
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
           void sendMessage();
         }
+      });
+
+      els.promptInput.addEventListener('input', () => {
+        syncSelectedSkillTags();
+        refreshMentionMenu();
+      });
+
+      els.promptInput.addEventListener('click', () => {
+        refreshMentionMenu();
+      });
+
+      els.promptInput.addEventListener('blur', () => {
+        setTimeout(() => {
+          closeMentionMenu();
+        }, 120);
       });
 
       els.attachmentButton.addEventListener('click', () => {
@@ -1736,6 +2040,7 @@ export function renderWebChatPage(config: WebConfig): string {
         if (!input) return;
         input.addEventListener('change', () => {
           saveFields();
+          void loadAvailableSkills();
           if (state.isConnected) {
             sendHello();
           }
@@ -1758,6 +2063,8 @@ export function renderWebChatPage(config: WebConfig): string {
       els.socketUrl.textContent = getSocketUrl();
       syncComposerState();
       renderPendingUploads();
+      syncSelectedSkillTags();
+      void loadAvailableSkills();
       connect();
       setInterval(() => {
         if (state.socket && state.socket.readyState === WebSocket.OPEN) {

@@ -35,7 +35,8 @@
         "python",
         "pandoc",
         "cd",
-        "cat"
+        "cat",
+        "mysql"
     ],
     "deniedCommands": [
         "rm",

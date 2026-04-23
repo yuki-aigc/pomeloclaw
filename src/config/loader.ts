@@ -571,6 +571,8 @@ export function loadConfig(): Config {
             enabled: fileConfig.exec?.enabled ?? DEFAULT_CONFIG.exec.enabled,
             allowedCommands: execCommands.allowedCommands,
             deniedCommands: execCommands.deniedCommands,
+            allowShellOperators: fileConfig.exec?.allowShellOperators ?? DEFAULT_CONFIG.exec.allowShellOperators,
+            shellAllowedCommands: fileConfig.exec?.shellAllowedCommands ?? DEFAULT_CONFIG.exec.shellAllowedCommands,
             defaultTimeoutMs: fileConfig.exec?.defaultTimeoutMs ?? DEFAULT_CONFIG.exec.defaultTimeoutMs,
             maxOutputLength: fileConfig.exec?.maxOutputLength ?? DEFAULT_CONFIG.exec.maxOutputLength,
             approvals: {

@@ -37,6 +37,7 @@ import {
     extractProcessPreview,
     type WebProcessBlock,
 } from './channels/web/process.js';
+import { buildSelectedSkillsInstruction } from './channels/web/skill-selection.js';
 import {
     buildWebTokenUsagePayload,
     createEmptyWebTokenUsageSource,
@@ -82,19 +83,31 @@ export type WebSlashCommand =
 
 const WEB_CANCELLED_ERROR = 'WEB_REQUEST_CANCELLED';
 
-function composeInboundWebText(text: string, mediaContext: string | null): string {
+function composeInboundWebText(
+    text: string,
+    mediaContext: string | null,
+    selectedSkills: string[] = [],
+): string {
     const normalizedText = text.trim();
     const normalizedMedia = mediaContext?.trim() || '';
+    const selectedSkillsInstruction = buildSelectedSkillsInstruction(selectedSkills);
+    let combined = '';
+
     if (normalizedText && normalizedMedia) {
-        return `${normalizedText}\n\n${normalizedMedia}`;
+        combined = `${normalizedText}\n\n${normalizedMedia}`;
+    } else if (normalizedText) {
+        combined = normalizedText;
+    } else if (normalizedMedia) {
+        combined = `请结合以下附件内容进行处理。\n\n${normalizedMedia}`;
     }
-    if (normalizedText) {
-        return normalizedText;
+
+    if (!selectedSkillsInstruction) {
+        return combined;
     }
-    if (normalizedMedia) {
-        return `请结合以下附件内容进行处理。\n\n${normalizedMedia}`;
+    if (!combined) {
+        return selectedSkillsInstruction;
     }
-    return '';
+    return `${selectedSkillsInstruction}\n\n用户原始请求如下：\n${combined}`;
 }
 
 function createWebThreadId(conversationId: string): string {
@@ -650,7 +663,10 @@ export async function startWebService(options?: {
                     attachments: message.attachments || [],
                     log,
                 });
-                const userText = composeInboundWebText(message.text, mediaContext);
+                const selectedSkills = Array.isArray(message.metadata?.webSelectedSkills)
+                    ? message.metadata.webSelectedSkills.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+                    : [];
+                const userText = composeInboundWebText(message.text, mediaContext, selectedSkills);
                 if (!userText) {
                     await adapter.sendStreamEvent({
                         inbound: message,
@@ -727,6 +743,7 @@ export async function startWebService(options?: {
                             scopeKey: scope.key,
                             direction: 'inbound',
                             attachmentCount: message.attachments?.length || 0,
+                            selectedSkills,
                         },
                     });
                     const inputAccounting = await applyTurnTokenAccounting({

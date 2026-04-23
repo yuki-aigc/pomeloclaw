@@ -7,6 +7,8 @@ const config: ExecConfig = {
     enabled: true,
     allowedCommands: ['python', 'python3', 'echo', 'curl'],
     deniedCommands: ['rm'],
+    allowShellOperators: false,
+    shellAllowedCommands: [],
     defaultTimeoutMs: 30000,
     maxOutputLength: 50000,
     approvals: {
@@ -61,9 +63,19 @@ test('still blocks unquoted redirection operators', () => {
     const risk = assessCommandRisk(command);
     const policy = checkCommandPolicy(command, config);
 
-    assert.equal(risk.blocked, true);
-    assert.equal(risk.reasons.includes('Redirection operators are not allowed'), true);
+    assert.equal(risk.blocked, false);
     assert.equal(policy.status, 'denied');
+});
+
+test('allows unquoted redirection operators when global shell operators are enabled', () => {
+    const shellConfig: ExecConfig = {
+        ...config,
+        allowShellOperators: true,
+    };
+    const command = 'echo hello > out.txt';
+    const policy = checkCommandPolicy(command, shellConfig);
+
+    assert.equal(policy.status, 'allowed');
 });
 
 test('still blocks NUL bytes in command input', () => {

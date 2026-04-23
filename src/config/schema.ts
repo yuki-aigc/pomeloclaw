@@ -132,6 +132,8 @@ const configSchemaInternal = z.object({
         enabled: z.boolean(),
         allowedCommands: z.array(z.string()),
         deniedCommands: z.array(z.string()),
+        allowShellOperators: z.boolean(),
+        shellAllowedCommands: z.array(z.string()),
         defaultTimeoutMs: z.number().int().positive(),
         maxOutputLength: z.number().int().positive(),
         approvals: z.object({

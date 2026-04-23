@@ -94,6 +94,8 @@
     "exec": {
         "enabled": true,
         "commandsFile": "./exec-commands.json",
+        "allowShellOperators": true,
+        "shellAllowedCommands": [],
         "defaultTimeoutMs": 30000,
         "maxOutputLength": 50000,
         "approvals": {

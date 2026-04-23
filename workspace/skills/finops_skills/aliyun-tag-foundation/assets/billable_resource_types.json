@@ -1,0 +1,120 @@
+{
+  "_comment": "可计费资源类型白名单 - 仅统计有费用花销的资源",
+  "_version": "1.0.0",
+  "_updated_at": "2024-03-19",
+  
+  "billable_resource_types": [
+    "ACS::ECS::Instance",
+    "ACS::ECS::Disk",
+    "ACS::ECS::Snapshot",
+    "ACS::ECS::Image",
+    "ACS::ECS::DedicatedHost",
+    
+    "ACS::RDS::DBInstance",
+    "ACS::PolarDB::DBCluster",
+    "ACS::DRDS::DrdsInstance",
+    "ACS::DTS::MigrationJob",
+    "ACS::DTS::SynchronizationJob",
+    
+    "ACS::REDIS::DBInstance",
+    "ACS::Memcache::DBInstance",
+    "ACS::MongoDB::DBInstance",
+    "ACS::HBase::Cluster",
+    "ACS::Lindorm::Instance",
+    "ACS::ClickHouse::DBCluster",
+    "ACS::GraphDatabase::DbInstance",
+    "ACS::SelectDB::DBInstance",
+    
+    "ACS::SLB::LoadBalancer",
+    "ACS::ALB::LoadBalancer",
+    "ACS::NLB::LoadBalancer",
+    "ACS::GA::Accelerator",
+    
+    "ACS::VPC::NatGateway",
+    "ACS::VPC::EIP",
+    "ACS::VPC::VpnGateway",
+    "ACS::VPC::CommonBandwidthPackage",
+    "ACS::VPC::ExpressConnect",
+    "ACS::CEN::CenInstance",
+    "ACS::CEN::CenBandwidthPackage",
+    "ACS::PrivateLink::VpcEndpoint",
+    
+    "ACS::OSS::Bucket",
+    "ACS::NAS::FileSystem",
+    "ACS::DBFS::FileSystem",
+    "ACS::HBR::Vault",
+    
+    "ACS::CS::Cluster",
+    "ACS::ECI::ContainerGroup",
+    "ACS::FC::Function",
+    "ACS::SAE::Application",
+    "ACS::CR::Repository",
+    "ACS::EDAS::Application",
+    
+    "ACS::Elasticsearch::Instance",
+    "ACS::OpenSearch::App",
+    
+    "ACS::MaxCompute::Project",
+    "ACS::Flink::Workspace",
+    "ACS::Hologram::Instance",
+    "ACS::DataWorks::Project",
+    "ACS::EMR::Cluster",
+    "ACS::PAI::Workspace",
+    "ACS::ADB::DBCluster",
+    
+    "ACS::MSE::Gateway",
+    "ACS::MSE::Cluster",
+    "ACS::AHAS::Instance",
+    "ACS::ARMS::PrometheusInstance",
+    "ACS::CMS::SiteMonitor",
+    
+    "ACS::ApiGateway::Api",
+    "ACS::IOT::Instance",
+    "ACS::MNS::Queue",
+    "ACS::MNS::Topic",
+    "ACS::RocketMQ::Instance",
+    "ACS::AMQP::Instance",
+    "ACS::EventBridge::EventBus",
+    
+    "ACS::DDoSPro::Instance",
+    "ACS::WAF::Instance",
+    "ACS::Bastionhost::Instance",
+    "ACS::DBAUDIT::Instance",
+    "ACS::SAS::Instance",
+    "ACS::Yundun::CertificateAuthority",
+    "ACS::KMS::Key",
+    
+    "ACS::CDN::Domain",
+    "ACS::DCDN::Domain",
+    "ACS::Scdn::Domain",
+    "ACS::PCDN::Domain",
+    "ACS::LiveVideo::Domain",
+    "ACS::VOD::Domain",
+    "ACS::CloudPhoto::PhotoStore"
+  ],
+  
+  "ack_managed_tag_prefixes": [
+    "ack.aliyun.com",
+    "kubernetes.io",
+    "k8s.io",
+    "acs:autoscaling",
+    "acs:ack:"
+  ],
+  
+  "exclude_name_patterns": [
+    "^kube-.*",
+    "^csi-.*",
+    "^flannel.*",
+    "^terway.*",
+    "^coredns.*",
+    "^ack-.*",
+    "^alicloud-.*"
+  ],
+  
+  "settings": {
+    "filter_ack_managed_resources": true,
+    "only_billable_types": true,
+    "default_max_total": 50000,
+    "concurrent_regions": 5
+  }
+}
