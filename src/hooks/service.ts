@@ -17,6 +17,8 @@ const DEFAULT_CALLBACK_TIMEOUT_MS = 10000;
 const DEFAULT_CALLBACK_RETRIES = 2;
 const DEFAULT_CALLBACK_RETRY_DELAY_MS = 1000;
 
+type HookFetch = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => ReturnType<typeof fetch>;
+
 class AsyncSemaphore {
     private active = 0;
     private readonly waiters: Array<() => void> = [];
@@ -54,7 +56,7 @@ export interface HookTaskManagerOptions {
         retryDelayMs?: number;
     };
     executeTask: (request: AgentHookRequest) => Promise<HookTaskExecutionResult>;
-    fetchImpl?: typeof fetch;
+    fetchImpl?: HookFetch;
 }
 
 export interface NormalizedAgentHookRequest extends AgentHookRequest {}
@@ -252,7 +254,7 @@ export function buildHookTaskQueryResponse(task: HookTaskSnapshot): HookTaskQuer
 }
 
 async function postCallback(params: {
-    fetchImpl: typeof fetch;
+    fetchImpl: HookFetch;
     request: NormalizedAgentHookRequest;
     body: HookTaskCallbackBody;
     timeoutMs: number;
@@ -290,7 +292,7 @@ export class HookTaskManager {
     private readonly taskTtlMs: number;
     private readonly callbackDefaults: Required<NonNullable<HookTaskManagerOptions['callbackDefaults']>>;
     private readonly executeTask: HookTaskManagerOptions['executeTask'];
-    private readonly fetchImpl: typeof fetch;
+    private readonly fetchImpl: HookFetch;
     private readonly semaphore: AsyncSemaphore;
     private readonly sessionQueue = new Map<string, Promise<void>>();
     private readonly tasksByRequestId = new Map<string, HookTaskSnapshot>();

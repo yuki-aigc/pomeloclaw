@@ -961,7 +961,7 @@ export class WebChannelAdapter implements ChannelAdapter {
         files: Array<{ name: string; mimeType: string; sizeBytes: number; buffer: Buffer }>;
     }> {
         const url = new URL(req.url || UPLOAD_API_PATH, `http://${req.headers.host || 'localhost'}`);
-        const request = new Request(url, {
+        const request = new Request(url.toString(), {
             method: req.method || 'POST',
             headers: req.headers as Record<string, string | string[]>,
             body: Readable.toWeb(req) as ReadableStream,
